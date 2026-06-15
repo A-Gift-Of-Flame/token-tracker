@@ -1,0 +1,52 @@
+{
+  "name": "token-tracker",
+  "version": "0.1.0",
+  "description": "Track AI agent token usage across Claude Code, Codex, OpenCode, Gemini CLI, Copilot CLI, Cursor, and manual JSONL logs.",
+  "author": {
+    "name": "A-Gift-Of-Flame",
+    "url": "https://github.com/A-Gift-Of-Flame"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/A-Gift-Of-Flame/token-tracker.git"
+  },
+  "homepage": "https://github.com/A-Gift-Of-Flame/token-tracker#readme",
+  "bugs": {
+    "url": "https://github.com/A-Gift-Of-Flame/token-tracker/issues"
+  },
+  "bin": {
+    "tt": "bin/tt.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "keywords": [
+    "tokens",
+    "usage",
+    "cost",
+    "tracking",
+    "claude-code",
+    "codex",
+    "gemini",
+    "opencode",
+    "copilot",
+    "cursor",
+    "llm",
+    "ai",
+    "pricing"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "start": "node bin/tt.js",
+    "test": "node --test"
+  }
+}
