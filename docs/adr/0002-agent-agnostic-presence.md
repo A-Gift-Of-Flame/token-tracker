@@ -1,8 +1,9 @@
 # ADR 0002 — agent-agnostic Discord Rich Presence (opt-in presence daemon)
 
-- **Status:** Accepted (ratified by user 2026-06-15)
+- **Status:** Accepted (amended 2026-06-16)
 - **Date:** 2026-06-15
-- **Backlog:** BL-140 (gates BL-142 → BL-144, all presence code)
+- **Backlog:** BL-140 (gates BL-142 → BL-144, all presence code), BL-147
+  (amends arbitration, run model, and signal tiers)
 - **Deciders:** user (ratified), coding-agent session
 - **Scope:** design contract only — no runtime code in this slice.
 
@@ -27,6 +28,23 @@ named explicitly and constrained tightly.
 BL-139..145 also lock the distribution pivot: the server stays private, the
 public client ships on npm, and the separate `claude-discord-rpc` plugin is
 deprecated in favor of `tt presence` once the presence feature ships.
+
+## Amendment 2026-06-16 (BL-147)
+
+BL-147 supersedes the original §5 last-active-wins arbitration and the original
+"Aggregate concurrent agents" rejection. The physical Discord limit is unchanged:
+there is still one activity per `client_id`. The truthful rendering model is now
+**primary-headline + background-aggregate**: one real headline agent at its full
+ceiling, plus a separately-labelled aggregate tail for the other live agents.
+
+BL-147 also supersedes the Claude-only daemon framing. Presence is a single
+opt-in multiplexing daemon/service mode that sees all live sources, tracks each
+source independently, and renders the one Discord slot from that whole live set.
+
+Finally, BL-147 adds layered signal tiers and closes the Cursor gap flagged in
+the epic / ADR 0002 §2. Skills may contribute advisory heartbeats, but the
+daemon owns Discord IPC; Cursor is recorded as session-end ceiling with
+not-priced `$0` subscription cost.
 
 ## Decision
 
@@ -67,6 +85,7 @@ firm; the live log-tail middle is the part BL-141 confirms.
 | Gemini | **Live log-tail** — model, tokens, cost, project at about 1-2s lag. | Existing collector parse logic can be reused over live chat logs; no Claude-style hooks are known. |
 | OpenCode | **Live log-tail** — model, tokens, cost, project at about 1-2s lag. | Existing collector parse logic can be reused over its live source; no Claude-style hooks are known. |
 | Copilot CLI | **Session-end only** — final model/tokens/cost/project after shutdown. | Usable metrics are written only at `session.shutdown`; no truthful live data is available. |
+| Cursor | **Session-end only** — final usage/project after shutdown where records exist; cost is not-priced `$0`. | Cursor is subscription-priced rather than per-token priced in token-tracker, and no truthful live surface is assumed. |
 
 The richness gap is intrinsic. "Same as Claude" is reachable only for Claude
 unless another agent exposes equivalent live hooks. Copilot's limitation is a
@@ -133,17 +152,23 @@ There are two presence execution paths:
 
 - **Foreground path:** `tt presence`, like `tt serve`, runs in the foreground and
   clears on Ctrl-C. This path is invariant-clean without any carve-out.
-- **Daemon path:** the Claude/full-richness path may auto-launch a detached
-  presence daemon on watched-agent start. This is the additive part that needs
-  the explicit carve-out.
+- **Daemon/service path:** a single opt-in presence daemon multiplexes all live
+  sources at once. This is required because Discord exposes one activity per
+  `client_id`, the headline+aggregate view needs every live source visible to one
+  process, and per-agent daemons would fight over the one Discord IPC socket.
+  Presence may be a second boot service or a flag/mode on the existing `tt watch`
+  loop; the implementation choice is deferred.
 
 The daemon carve-out inherits DRPC's proven model:
 
-- **Auto-launch on agent start:** DRPC's `SessionStart` hook runs `launcher.js`,
-  which spawns `daemon.js` detached with ignored stdio and calls `unref()`, then
-  exits so the hook does not block the agent.
-- **Auto-clear / self-exit when the watched agent dies:** shutdown is detected
-  by three signals, in order of precision:
+- **Auto-launch on watched source start:** a deterministic start signal such as
+  DRPC's `SessionStart` hook may launch the single daemon/service, which detaches
+  with ignored stdio and calls `unref()`, then exits so the watched agent is not
+  blocked.
+- **Per-source auto-clear when each watched agent dies:** every live source is
+  tracked and cleared independently. One agent ending updates the
+  headline/aggregate set without killing presence for the others. Shutdown is
+  detected per source by three signals, in order of precision:
   1. clean exit marker: DRPC's `SessionEnd` hook writes `ENDED_FILE`;
   2. PID liveness: `live.json` pins the real Claude PID; `pidAlive()` uses
      `process.kill(pid, 0)` and, on Linux, verifies `/proc/<pid>/comm` and
@@ -162,15 +187,40 @@ The daemon carve-out inherits DRPC's proven model:
 - **Single-instance guard:** DRPC uses a pidfile lock. The lock records both PID
   and daemon script path so the launcher can replace a stale daemon from an older
   plugin version instead of leaving stale code running.
-- **Concurrent agents → one Discord slot, last-active-wins.** Discord exposes a
-  single activity per `client_id`. Multiple agents may run at once (e.g. Claude and
-  Codex). Presence does **not aggregate** them: aggregation would cram two agents
-  into Discord's two activity lines (less richness each) and cannot truthfully merge
-  per-agent activity/tokens/cost. Instead the single presence slot reflects the
-  **most-recently-active** agent — the one whose source emitted the latest event —
-  at that agent's full ceiling. Backgrounded agents are not shown; this is truthful
-  (it shows exactly one real current focus) rather than a blended fiction.
-  Rejected: aggregate/multiplex (richness + truthfulness loss, see §1).
+- **Concurrent agents → one Discord slot, primary-headline +
+  background-aggregate.** Discord exposes a single activity per `client_id`. That
+  physical limit is unchanged.
+
+  The headline is the agent the user is steering. It is chosen by interactivity
+  tier: hook-rich / interactive sources (for example Claude Code) rank above
+  autonomous / background sources (for example a backgrounded Codex job).
+  Tiebreak within a tier is most-recent activity.
+
+  The background aggregate tail is a compact line summarizing the other live
+  agents, for example `+N bg · $TOTAL · TOK`, where every number is a real sum,
+  labelled as an aggregate of the background agents. Numbers are never attributed
+  to the headline agent; no cross-attribution is allowed.
+
+  Worked example:
+
+  ```text
+  Claude · tracker (CTO)
+  +1 Codex bg · $6.10 · 1.4M tok
+  ```
+
+  Degradation rules are explicit: a solo agent renders headline only, with no
+  tail. If N agents are live and none is interactive, the most-recent agent is the
+  headline and the tail renders `+(N-1) bg`.
+
+  This supersedes last-active-wins because the user's real workflow can have a
+  steered foreground agent and truthful background work at the same time. The
+  original objection to aggregation was that merging "cannot truthfully merge
+  per-agent activity/tokens/cost." This model does not merge per-agent activity
+  into a blended fiction: it shows one real headline at full ceiling plus a
+  separately-labelled real aggregate. No number is faked or mis-attributed.
+  Rejected only: blended presence that fuses agents into one implied session.
+  Deferred: making the interactivity tier or an explicit headline override
+  user-configurable.
 - **Passive:** the daemon reads agent logs/status files only, never mutates
   source files, never writes prompts, never touches the model, and consumes zero
   model tokens.
@@ -179,7 +229,31 @@ The token-tracker implementation must preserve these properties. Anything that
 outlives the watched agent, runs without user opt-in, or writes back into agent
 state violates this ADR.
 
-### 6. `claude-discord-rpc` is formally deprecated into token-tracker.
+### 6. Signal tiers are layered; a skill is a signal, not the daemon.
+
+A skill cannot be the integration. Skills are stateless / in-context and cannot
+hold a persistent Discord IPC socket. The daemon owns Discord IPC.
+
+A skill may be a thin cross-harness heartbeat emitter. For example, on session
+start or turn it may run `tt presence signal --agent codex --project X`, writing
+an inbox/signal file that the daemon consumes. This has low token overhead: one
+instruction plus one shell call per session. It also works on any harness that
+supports skills or agent-instructions, not only Claude.
+
+That signal is advisory. It is model-discretion, less reliable than
+deterministic hooks, and spends the user's model tokens. Presence must never
+depend on it for a "live" claim because §1 truthfulness still binds.
+
+Authoritative to advisory signal tiers:
+
+`hooks (Claude) > skill-heartbeat (Codex / other harnesses with skills) > live-tail (file watch) > session-end`
+
+A Claude-only skill/plugin wrapper is explicitly rejected as the integration. It
+would re-couple presence to Claude like the deprecated `claude-discord-rpc`.
+Presence stays agent-agnostic in `tt`; a skill is permitted only as a signal
+source.
+
+### 7. `claude-discord-rpc` is formally deprecated into token-tracker.
 
 The separate `claude-discord-rpc` plugin/repo is superseded by token-tracker's
 agent-agnostic presence subsystem. Presence moves into the public `tt` client so
@@ -199,9 +273,9 @@ added:
 - Foreground presence: `tt presence` is foreground-only, like `tt serve`, and
   needs no daemon exception.
 - Daemon presence: the opt-in presence daemon is the sole bounded client-side
-  exception to the no-background-daemon invariant. It may auto-launch only for a
-  watched active agent, must be single-instance guarded, and must clear/self-exit
-  when that agent dies.
+  exception to the no-background-daemon invariant. It may auto-launch only for
+  watched active sources, must be single-instance guarded, and must clear each
+  source independently when that source dies.
 - Read-only: presence is passive over agent logs/status surfaces and never
   mutates source files or model state.
 - Zero-dep: Discord IPC is hand-rolled with `node:net`; no runtime dependency is
@@ -222,6 +296,8 @@ out explicitly.
   is explicit instead of hidden.
 - Codex, Gemini, OpenCode, Copilot CLI, and future agents get presence through
   the same renderer without pretending their live surfaces are equal.
+- Concurrent agents can now show a truthful foreground headline plus labelled
+  background totals instead of hiding all background work.
 - DRPC's useful zero-dep IPC and liveness model are preserved while retiring a
   fragmented Claude-only plugin.
 - Truthfulness becomes an enforceable design constraint for all downstream
@@ -241,8 +317,10 @@ out explicitly.
 - Presence is a public surface: real `project` and `cost` can be broadcast to the
   user's Discord audience. Accepted by design (§1) — exposure is the user's
   responsibility, presence is opt-in, and an optional per-field hide is deferred.
-- Concurrent agents collapse to one Discord slot (last-active-wins, §5); a
-  backgrounded agent is not reflected until it next emits activity.
+- Concurrent agents still collapse to one Discord slot (§5); the aggregate tail
+  is compact and intentionally less rich than the headline.
+- Skill-heartbeat signals spend model tokens and are advisory only; hooks and
+  source files remain more authoritative for live claims (§6).
 - Discord IPC is an unofficial local IPC contract and may drift; the zero-dep
   implementation must handle connection failure and reconnect conservatively.
 
@@ -261,10 +339,14 @@ out explicitly.
 - **Pretend all agents can be "same as Claude."** Rejected: false. Claude's
   ceiling comes from Claude-specific hooks/status surfaces; other agents only get
   what their own live surfaces expose.
-- **Aggregate concurrent agents into one presence.** Rejected: Discord's single
-  activity per `client_id` plus its two-line activity format means merging agents
-  loses per-agent richness and cannot truthfully combine activity/tokens/cost.
-  Last-active-wins (§5) shows one real current focus at full ceiling instead.
+- **Aggregate concurrent agents into one blended presence.** Rejected:
+  Discord's single activity per `client_id` plus its two-line activity format
+  cannot truthfully fuse multiple agents into one implied session. The labelled
+  primary-headline + background-aggregate form is adopted in §5 because it keeps
+  the headline real and labels background totals as aggregate values.
+- **Claude-only skill/plugin wrapper as the integration.** Rejected: re-couples
+  presence to Claude like the deprecated `claude-discord-rpc`. Skills may only be
+  advisory heartbeat sources (§6); the daemon remains agent-agnostic in `tt`.
 - **Redact project/cost by default on Discord.** Rejected for now: exposure is the
   user's responsibility on an opt-in public surface (§1); a per-field hide toggle
   remains an optional future convenience, not a mandatory default.
