@@ -42,6 +42,17 @@ Local dashboard:
                                (auto-syncs every S seconds, default 60; 0 disables)
                                (default port 7777; GET /api/<period>?by=<grouping>)
 
+Discord presence (opt-in):
+  tt presence [--interval S] [--fresh S] [--source NAME]
+                               connect Discord IPC, publish truthful local usage
+                               presence, clear on Ctrl-C (default interval 5s;
+                               records older than --fresh seconds show stale)
+                               sources: store (default), claude, codex,
+                               gemini, opencode
+  tt presence install          opt in: add Claude Code SessionStart/SessionEnd
+                               hooks for the bounded presence daemon
+  tt presence uninstall        remove token-tracker Claude Code presence hooks
+
 Data:
   tt sync [--push|--no-push]   collect new usage from all agents; optionally push
                                (auto-push uses remote.json opt-in)
@@ -137,6 +148,69 @@ async function main() {
                 interval: args.flags.interval === undefined ? 60 : Number(args.flags.interval),
             });
             return; // the interval keeps the process alive until Ctrl-C
+        }
+
+        case 'presence': {
+            if (args.flags.help) { console.log(HELP); return; }
+            const sub = args._[1];
+            if (sub === 'launch') {
+                const { runLauncher } = require('../src/presence/launcher');
+                await runLauncher();
+                return;
+            }
+            if (sub === 'daemon') {
+                const { runDaemon } = require('../src/presence/daemon');
+                await runDaemon();
+                return;
+            }
+            if (sub === 'session-end') {
+                const { runSessionEnd } = require('../src/presence/session-end');
+                await runSessionEnd();
+                return;
+            }
+            if (sub === 'install') {
+                const { installPresenceHooks } = require('../src/presence/install');
+                const r = installPresenceHooks();
+                console.log('installed Claude Code presence hooks in ' + r.file);
+                console.log('daemon path is opt-in and bounded: it clears/exits when the watched Claude session ends.');
+                console.log('while installed and active, daemon presence owns the Discord slot; foreground tt presence should not run at the same time.');
+                return;
+            }
+            if (sub === 'uninstall') {
+                const { uninstallPresenceHooks } = require('../src/presence/install');
+                const r = uninstallPresenceHooks();
+                console.log('removed token-tracker Claude Code presence hooks from ' + r.file);
+                return;
+            }
+            if (sub && sub.startsWith('-') === false) {
+                console.error('unknown presence subcommand: ' + sub + ' (try: install|uninstall)');
+                process.exit(1);
+            }
+            const { runPresence } = require('../src/presence/engine');
+            const interval = args.flags.interval === undefined ? undefined : Number(args.flags.interval);
+            const fresh = args.flags.fresh === undefined ? undefined : Number(args.flags.fresh);
+            const sourceName = args.flags.source === undefined ? undefined : String(args.flags.source);
+            if (interval !== undefined && (!Number.isFinite(interval) || interval <= 0)) {
+                console.error('--interval needs a positive number of seconds');
+                process.exit(1);
+            }
+            if (fresh !== undefined && (!Number.isFinite(fresh) || fresh <= 0)) {
+                console.error('--fresh needs a positive number of seconds');
+                process.exit(1);
+            }
+            if (sourceName !== undefined) {
+                const { PRESENCE_SOURCES } = require('../src/presence/engine');
+                if (!PRESENCE_SOURCES.has(sourceName)) {
+                    console.error('--source must be one of: ' + Array.from(PRESENCE_SOURCES).join(', '));
+                    process.exit(1);
+                }
+            }
+            await runPresence({
+                pollMs: interval === undefined ? undefined : interval * 1000,
+                freshnessMs: fresh === undefined ? undefined : fresh * 1000,
+                sourceName,
+            });
+            return;
         }
 
         case 'sync': {
