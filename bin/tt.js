@@ -60,9 +60,12 @@ Data:
                                no dashboard (foreground; Ctrl-C to stop).
   tt service install           install + start the always-on watcher as a boot
          [--interval S]        service (systemd / launchd / Scheduled Task —
-                               auto-detected). Survives reboots and crashes.
-  tt service uninstall         stop and remove the boot service.
-  tt service status            show whether the boot service is running.
+         [--presence]          auto-detected). Survives reboots and crashes.
+                               --presence also installs opt-in
+                               always-on Discord presence (tt presence --all).
+  tt service uninstall         stop and remove sync + presence boot services.
+         [--presence]          remove only the opt-in presence service.
+  tt service status            show sync + presence service status.
   tt log --agent X --model Y --input N --output M
          [--cache-read N] [--cache-write N] [--ts ISO]   record manually
   tt agents                    list collectors and the inbox path
@@ -162,9 +165,9 @@ async function main() {
             const sub = args._[1] || 'install';
             let r;
             if (sub === 'install') {
-                r = service.install({ interval: args.flags.interval });
+                r = service.install({ interval: args.flags.interval, presence: !!args.flags.presence });
             } else if (sub === 'uninstall' || sub === 'remove') {
-                r = service.uninstall();
+                r = service.uninstall({ presenceOnly: !!args.flags.presence });
             } else if (sub === 'status') {
                 r = service.status();
             } else {

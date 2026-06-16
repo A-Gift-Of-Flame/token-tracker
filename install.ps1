@@ -70,6 +70,10 @@ if (Test-Path $remoteJson) {
 
 # --- 4. boot service -------------------------------------------------------
 Say "Installing always-on sync service"
-& cmd /c "`"$tt`" service install"
+if ($env:TT_PRESENCE -eq '1') {
+  & cmd /c "`"$tt`" service install --presence"
+} else {
+  & cmd /c "`"$tt`" service install"
+}
 
 Say "Done. Usage now syncs automatically, forever. Nothing else to run."

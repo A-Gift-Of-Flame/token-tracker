@@ -83,7 +83,22 @@ else
 fi
 
 # --- 4. boot service -------------------------------------------------------
+INSTALL_PRESENCE=0
+if [ "${TT_PRESENCE:-}" = "1" ]; then
+  INSTALL_PRESENCE=1
+elif [ -t 0 ]; then
+  printf 'Install always-on Discord presence too? [y/N]: '
+  read -r PRESENCE_REPLY
+  case "$PRESENCE_REPLY" in
+    y|Y|yes|YES|Yes) INSTALL_PRESENCE=1 ;;
+  esac
+fi
+
 say "Installing always-on sync service"
-"$TT" service install
+if [ "$INSTALL_PRESENCE" = "1" ]; then
+  "$TT" service install --presence
+else
+  "$TT" service install
+fi
 
 say "Done. Usage now syncs automatically, forever. Nothing else to run."

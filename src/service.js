@@ -18,9 +18,42 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const LABEL = 'token-tracker';
 const TT_JS = path.resolve(__dirname, '..', 'bin', 'tt.js');
 const NODE = process.execPath;
+
+const SERVICES = {
+    sync: {
+        key: 'sync',
+        label: 'token-tracker',
+        launchdLabel: 'com.token-tracker.watch',
+        taskName: 'token-tracker-watch',
+        desc: 'token-tracker continuous sync+push',
+        args: (interval) => ['watch', '--interval', String(interval)],
+    },
+    presence: {
+        key: 'presence',
+        label: 'token-tracker-presence',
+        launchdLabel: 'token-tracker-presence',
+        taskName: 'token-tracker-presence',
+        desc: 'token-tracker Discord presence',
+        args: () => ['presence', '--all'],
+    },
+};
+
+function serviceSpecs(opts = {}) {
+    const specs = [SERVICES.sync];
+    if (opts.presence) specs.push(SERVICES.presence);
+    return specs;
+}
+
+function uninstallSpecs(opts = {}) {
+    if (opts.presenceOnly || (opts.presence && !opts.syncToo)) return [SERVICES.presence];
+    return [SERVICES.sync, SERVICES.presence];
+}
+
+function argsFor(spec, interval) {
+    return typeof spec.args === 'function' ? spec.args(interval) : spec.args;
+}
 
 function ttEnv() {
     // Only forward an explicit data-dir override; default resolves the same way
@@ -45,21 +78,26 @@ function tryRun(cmd, args, opts = {}) {
 // ---------- Linux: systemd user unit ----------
 
 const SYSTEMD_DIR = path.join(os.homedir(), '.config', 'systemd', 'user');
-const SYSTEMD_UNIT = path.join(SYSTEMD_DIR, LABEL + '.service');
 
-function systemdUnitText(interval) {
+function systemdUnitPath(spec) {
+    return path.join(SYSTEMD_DIR, spec.label + '.service');
+}
+
+function systemdUnitText(spec, interval) {
     const env = ttEnv();
     const envLines = Object.entries(env).map(([k, v]) => 'Environment=' + k + '=' + v).join('\n');
     return [
         '[Unit]',
-        'Description=token-tracker continuous sync+push',
+        'Description=' + spec.desc,
         'After=network-online.target',
         'Wants=network-online.target',
         '',
         '[Service]',
         'Type=simple',
-        'ExecStart=' + NODE + ' ' + TT_JS + ' watch --interval ' + interval,
+        'ExecStart=' + NODE + ' ' + TT_JS + ' ' + argsFor(spec, interval).join(' '),
         envLines,
+        // Presence exits non-zero when Discord is not up yet; Restart=always
+        // retries it until Discord is available.
         'Restart=always',
         'RestartSec=10',
         '',
@@ -69,42 +107,46 @@ function systemdUnitText(interval) {
     ].filter((l) => l !== '').join('\n') + '\n';
 }
 
-function installSystemd(interval) {
+function installSystemd(spec, interval) {
+    const unit = systemdUnitPath(spec);
     fs.mkdirSync(SYSTEMD_DIR, { recursive: true });
-    fs.writeFileSync(SYSTEMD_UNIT, systemdUnitText(interval));
+    fs.writeFileSync(unit, systemdUnitText(spec, interval));
     run('systemctl', ['--user', 'daemon-reload']);
-    run('systemctl', ['--user', 'enable', '--now', LABEL + '.service']);
+    run('systemctl', ['--user', 'enable', '--now', spec.label + '.service']);
     // Linger lets the service run without an active login session (after reboot,
     // before the user logs in). Best-effort: may need polkit; warn if it fails.
     const linger = tryRun('loginctl', ['enable-linger', os.userInfo().username]);
-    let msg = 'installed systemd user service (' + SYSTEMD_UNIT + ') — running now, starts on boot.';
+    let msg = 'installed systemd user service (' + unit + ') — running now, starts on boot.';
     if (!linger.ok) msg += '\nnote: could not enable-linger (service may pause when logged out). run: sudo loginctl enable-linger ' + os.userInfo().username;
     return { ok: true, message: msg };
 }
 
-function uninstallSystemd() {
-    tryRun('systemctl', ['--user', 'disable', '--now', LABEL + '.service']);
-    try { fs.unlinkSync(SYSTEMD_UNIT); } catch {}
+function uninstallSystemd(spec) {
+    tryRun('systemctl', ['--user', 'disable', '--now', spec.label + '.service']);
+    try { fs.unlinkSync(systemdUnitPath(spec)); } catch {}
     tryRun('systemctl', ['--user', 'daemon-reload']);
-    return { ok: true, message: 'removed systemd user service.' };
+    return { ok: true, message: 'removed systemd user service: ' + spec.label + '.' };
 }
 
-function statusSystemd() {
-    const active = tryRun('systemctl', ['--user', 'is-active', LABEL + '.service']);
-    const enabled = tryRun('systemctl', ['--user', 'is-enabled', LABEL + '.service']);
+function statusSystemd(spec) {
+    const active = tryRun('systemctl', ['--user', 'is-active', spec.label + '.service']);
+    const enabled = tryRun('systemctl', ['--user', 'is-enabled', spec.label + '.service']);
     return {
         ok: true,
-        message: 'service: ' + active.out.trim() + ' / ' + enabled.out.trim()
-            + (fs.existsSync(SYSTEMD_UNIT) ? '' : ' (not installed)'),
+        message: spec.key + ': ' + active.out.trim() + ' / ' + enabled.out.trim()
+            + (fs.existsSync(systemdUnitPath(spec)) ? '' : ' (not installed)'),
     };
 }
 
 // ---------- macOS: launchd LaunchAgent ----------
 
-const PLIST_LABEL = 'com.token-tracker.watch';
-const PLIST_PATH = path.join(os.homedir(), 'Library', 'LaunchAgents', PLIST_LABEL + '.plist');
+const PLIST_DIR = path.join(os.homedir(), 'Library', 'LaunchAgents');
 
-function plistText(interval) {
+function plistPath(spec) {
+    return path.join(PLIST_DIR, spec.launchdLabel + '.plist');
+}
+
+function plistText(spec, interval) {
     const env = ttEnv();
     const envDict = Object.keys(env).length
         ? '  <key>EnvironmentVariables</key>\n  <dict>\n'
@@ -114,100 +156,136 @@ function plistText(interval) {
     return '<?xml version="1.0" encoding="UTF-8"?>\n'
         + '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
         + '<plist version="1.0">\n<dict>\n'
-        + '  <key>Label</key><string>' + PLIST_LABEL + '</string>\n'
+        + '  <key>Label</key><string>' + spec.launchdLabel + '</string>\n'
         + '  <key>ProgramArguments</key>\n  <array>\n'
         + '    <string>' + NODE + '</string>\n'
         + '    <string>' + TT_JS + '</string>\n'
-        + '    <string>watch</string>\n'
-        + '    <string>--interval</string>\n'
-        + '    <string>' + interval + '</string>\n'
+        + argsFor(spec, interval).map((arg) => '    <string>' + arg + '</string>').join('\n') + '\n'
         + '  </array>\n'
         + envDict
         + '  <key>RunAtLoad</key><true/>\n'
+        // Presence exits non-zero when Discord is not up yet; KeepAlive retries
+        // it until Discord is available.
         + '  <key>KeepAlive</key><true/>\n'
         + '</dict>\n</plist>\n';
 }
 
-function installLaunchd(interval) {
-    fs.mkdirSync(path.dirname(PLIST_PATH), { recursive: true });
-    fs.writeFileSync(PLIST_PATH, plistText(interval));
+function installLaunchd(spec, interval) {
+    const file = plistPath(spec);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, plistText(spec, interval));
     const uid = process.getuid();
     // bootout first so re-install reloads cleanly; ignore if not loaded.
-    tryRun('launchctl', ['bootout', 'gui/' + uid + '/' + PLIST_LABEL]);
-    const boot = tryRun('launchctl', ['bootstrap', 'gui/' + uid, PLIST_PATH]);
+    tryRun('launchctl', ['bootout', 'gui/' + uid + '/' + spec.launchdLabel]);
+    const boot = tryRun('launchctl', ['bootstrap', 'gui/' + uid, file]);
     if (!boot.ok) {
         // Older macOS fallback.
-        tryRun('launchctl', ['load', '-w', PLIST_PATH]);
+        tryRun('launchctl', ['load', '-w', file]);
     }
-    tryRun('launchctl', ['kickstart', 'gui/' + uid + '/' + PLIST_LABEL]);
-    return { ok: true, message: 'installed launchd agent (' + PLIST_PATH + ') — running now, starts on login.' };
+    tryRun('launchctl', ['kickstart', 'gui/' + uid + '/' + spec.launchdLabel]);
+    return { ok: true, message: 'installed launchd agent (' + file + ') — running now, starts on login.' };
 }
 
-function uninstallLaunchd() {
+function uninstallLaunchd(spec) {
     const uid = process.getuid();
-    tryRun('launchctl', ['bootout', 'gui/' + uid + '/' + PLIST_LABEL]);
-    tryRun('launchctl', ['unload', '-w', PLIST_PATH]);
-    try { fs.unlinkSync(PLIST_PATH); } catch {}
-    return { ok: true, message: 'removed launchd agent.' };
+    tryRun('launchctl', ['bootout', 'gui/' + uid + '/' + spec.launchdLabel]);
+    tryRun('launchctl', ['unload', '-w', plistPath(spec)]);
+    try { fs.unlinkSync(plistPath(spec)); } catch {}
+    return { ok: true, message: 'removed launchd agent: ' + spec.launchdLabel + '.' };
 }
 
-function statusLaunchd() {
-    const r = tryRun('launchctl', ['list', PLIST_LABEL]);
-    return { ok: true, message: r.ok ? 'service loaded.' : 'service not loaded.' };
+function statusLaunchd(spec) {
+    const r = tryRun('launchctl', ['list', spec.launchdLabel]);
+    const missing = fs.existsSync(plistPath(spec)) ? '' : ' (not installed)';
+    return { ok: true, message: spec.key + ': ' + (r.ok ? 'service loaded.' : 'service not loaded' + missing + '.') };
 }
 
 // ---------- Windows: Scheduled Task ----------
 
-const TASK_NAME = 'token-tracker-watch';
+function schtasksArgs(spec, interval) {
+    const tr = '"' + NODE + '" "' + TT_JS + '" ' + argsFor(spec, interval).join(' ');
+    return ['/create', '/tn', spec.taskName, '/tr', tr, '/sc', 'onlogon', '/rl', 'limited', '/f'];
+}
 
-function installSchtasks(interval) {
+function installSchtasks(spec, interval) {
     // ONLOGON task that runs the watch loop. /f overwrites on re-install.
-    const tr = '"' + NODE + '" "' + TT_JS + '" watch --interval ' + interval;
-    const r = tryRun('schtasks', ['/create', '/tn', TASK_NAME, '/tr', tr, '/sc', 'onlogon', '/rl', 'limited', '/f']);
+    const r = tryRun('schtasks', schtasksArgs(spec, interval));
     if (!r.ok) return { ok: false, message: 'schtasks create failed: ' + r.out.trim() };
-    tryRun('schtasks', ['/run', '/tn', TASK_NAME]);
-    return { ok: true, message: 'installed scheduled task "' + TASK_NAME + '" — running now, starts on logon.' };
+    tryRun('schtasks', ['/run', '/tn', spec.taskName]);
+    return { ok: true, message: 'installed scheduled task "' + spec.taskName + '" — running now, starts on logon.' };
 }
 
-function uninstallSchtasks() {
-    tryRun('schtasks', ['/end', '/tn', TASK_NAME]);
-    const r = tryRun('schtasks', ['/delete', '/tn', TASK_NAME, '/f']);
-    return { ok: true, message: r.ok ? 'removed scheduled task.' : 'no scheduled task to remove.' };
+function uninstallSchtasks(spec) {
+    tryRun('schtasks', ['/end', '/tn', spec.taskName]);
+    const r = tryRun('schtasks', ['/delete', '/tn', spec.taskName, '/f']);
+    return { ok: true, message: r.ok ? 'removed scheduled task: ' + spec.taskName + '.' : 'no scheduled task to remove: ' + spec.taskName + '.' };
 }
 
-function statusSchtasks() {
-    const r = tryRun('schtasks', ['/query', '/tn', TASK_NAME]);
-    return { ok: true, message: r.ok ? r.out.trim().split('\n').slice(-1)[0] : 'task not installed.' };
+function statusSchtasks(spec) {
+    const r = tryRun('schtasks', ['/query', '/tn', spec.taskName]);
+    return { ok: true, message: spec.key + ': ' + (r.ok ? r.out.trim().split('\n').slice(-1)[0] : 'task not installed.') };
 }
 
 // ---------- dispatch ----------
 
-function install(opts = {}) {
-    const interval = Number(opts.interval) > 0 ? Number(opts.interval) : 60;
+function platformInstall(spec, interval) {
     switch (process.platform) {
-        case 'linux': return installSystemd(interval);
-        case 'darwin': return installLaunchd(interval);
-        case 'win32': return installSchtasks(interval);
+        case 'linux': return installSystemd(spec, interval);
+        case 'darwin': return installLaunchd(spec, interval);
+        case 'win32': return installSchtasks(spec, interval);
         default: return { ok: false, message: 'unsupported platform: ' + process.platform };
     }
 }
 
-function uninstall() {
+function platformUninstall(spec) {
     switch (process.platform) {
-        case 'linux': return uninstallSystemd();
-        case 'darwin': return uninstallLaunchd();
-        case 'win32': return uninstallSchtasks();
+        case 'linux': return uninstallSystemd(spec);
+        case 'darwin': return uninstallLaunchd(spec);
+        case 'win32': return uninstallSchtasks(spec);
         default: return { ok: false, message: 'unsupported platform: ' + process.platform };
     }
+}
+
+function platformStatus(spec) {
+    switch (process.platform) {
+        case 'linux': return statusSystemd(spec);
+        case 'darwin': return statusLaunchd(spec);
+        case 'win32': return statusSchtasks(spec);
+        default: return { ok: false, message: 'unsupported platform: ' + process.platform };
+    }
+}
+
+function install(opts = {}) {
+    const interval = Number(opts.interval) > 0 ? Number(opts.interval) : 60;
+    const results = serviceSpecs(opts).map((spec) => platformInstall(spec, interval));
+    return {
+        ok: results.every((r) => r.ok),
+        message: results.map((r) => r.message).join('\n'),
+    };
+}
+
+function uninstall(opts = {}) {
+    const results = uninstallSpecs(opts).map((spec) => platformUninstall(spec));
+    return {
+        ok: results.every((r) => r.ok),
+        message: results.map((r) => r.message).join('\n'),
+    };
 }
 
 function status() {
-    switch (process.platform) {
-        case 'linux': return statusSystemd();
-        case 'darwin': return statusLaunchd();
-        case 'win32': return statusSchtasks();
-        default: return { ok: false, message: 'unsupported platform: ' + process.platform };
-    }
+    const results = [SERVICES.sync, SERVICES.presence].map((spec) => platformStatus(spec));
+    return {
+        ok: results.every((r) => r.ok),
+        message: results.map((r) => r.message).join('\n'),
+    };
 }
 
-module.exports = { install, uninstall, status };
+module.exports = {
+    SERVICES,
+    install,
+    plistText,
+    schtasksArgs,
+    status,
+    systemdUnitText,
+    uninstall,
+};
