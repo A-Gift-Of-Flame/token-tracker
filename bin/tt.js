@@ -43,7 +43,8 @@ Local dashboard:
                                (default port 7777; GET /api/<period>?by=<grouping>)
 
 Data:
-  tt sync                      collect new usage from all agents
+  tt sync [--push|--no-push]   collect new usage from all agents; optionally push
+                               (auto-push uses remote.json opt-in)
   tt log --agent X --model Y --input N --output M
          [--cache-read N] [--cache-write N] [--ts ISO]   record manually
   tt agents                    list collectors and the inbox path
@@ -65,9 +66,11 @@ Data:
             [--clear-daily]    ceilings warn on tt sync + reports when crossed
 
 Remote push (cloud tier — opt-in):
-  tt login <token> --endpoint URL  save device token + server URL to remote.json (0600)
+  tt login <token> --endpoint URL [--auto-push]
+                                  save device token + server URL to remote.json (0600)
   tt push [--since ISO]            push new local records to the remote (idempotent)
   tt remote status                 show remote config + last-push timestamp
+  tt remote auto-push on|off       push automatically after tt sync
 
 Sources: Claude Code, Codex CLI, OpenCode (automatic). Anything else via
 "tt log" or JSONL files dropped in ${ROOT}/inbox/.
@@ -91,6 +94,16 @@ function parseArgs(argv) {
         }
     }
     return args;
+}
+
+function printPushResult(r) {
+    if (r.pushed === 0) {
+        console.log('nothing new to push (already up to date)');
+    } else {
+        console.log('pushed ' + r.pushed + ' record(s) to ' + r.endpoint);
+        console.log('added ' + r.added + ', duplicate ' + r.duplicate
+            + (r.invalid ? ', invalid ' + r.invalid : ''));
+    }
 }
 
 async function main() {
@@ -122,6 +135,19 @@ async function main() {
             console.log('total new records: ' + res.total
                 + (res.pricing.live ? '' : '  (pricing: offline/stale table)'));
             for (const w of require('../src/budget').thresholdWarnings()) console.log(w);
+            if (!args.flags['no-push']) {
+                const remote = require('../src/remote');
+                const cfg = remote.loadRemote();
+                if (args.flags.push || (cfg && cfg.autoPush)) {
+                    try {
+                        printPushResult(await remote.push());
+                    } catch (err) {
+                        console.error('warning: auto-push failed: '
+                            + (err && err.message ? err.message : err)
+                            + ' (records kept locally, will retry next sync)');
+                    }
+                }
+            }
             return;
         }
 
@@ -384,23 +410,17 @@ async function main() {
                 process.exit(1);
             }
             const { saveRemote } = require('../src/remote');
-            saveRemote({ token, endpoint: String(endpoint).replace(/\/$/, '') });
+            saveRemote({ token, endpoint: String(endpoint).replace(/\/$/, ''), autoPush: !!args.flags['auto-push'] });
             console.log('saved remote config (remote.json)');
             console.log('endpoint: ' + endpoint);
+            if (args.flags['auto-push']) console.log('auto-push: on');
             return;
         }
 
         case 'push': {
             const { push } = require('../src/remote');
             const since = args.flags.since != null ? String(args.flags.since) : undefined;
-            const r = await push({ since });
-            if (r.pushed === 0) {
-                console.log('nothing new to push (already up to date)');
-            } else {
-                console.log('pushed ' + r.pushed + ' record(s) to ' + r.endpoint);
-                console.log('added ' + r.added + ', duplicate ' + r.duplicate
-                    + (r.invalid ? ', invalid ' + r.invalid : ''));
-            }
+            printPushResult(await push({ since }));
             return;
         }
 
@@ -413,8 +433,23 @@ async function main() {
                     console.log('remote: not configured — run tt login <token> --endpoint <URL>');
                 } else {
                     console.log('endpoint: ' + s.endpoint);
+                    console.log('auto-push: ' + (s.autoPush ? 'on' : 'off'));
                     console.log('last push: ' + (s.pushedAt || 'never'));
                 }
+            } else if (sub === 'auto-push') {
+                const value = args._[2];
+                if (value !== 'on' && value !== 'off') {
+                    console.error('usage: tt remote auto-push on|off');
+                    process.exit(1);
+                }
+                const { loadRemote, saveRemote } = require('../src/remote');
+                const cfg = loadRemote();
+                if (!cfg) {
+                    console.error('no remote configured — run tt login <token> --endpoint <URL>');
+                    process.exit(1);
+                }
+                saveRemote({ ...cfg, autoPush: value === 'on' });
+                console.log('auto-push: ' + value);
             } else {
                 console.error('unknown remote subcommand: ' + sub + ' (try: tt remote status)');
                 process.exit(1);

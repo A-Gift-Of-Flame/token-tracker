@@ -13,7 +13,7 @@ and sends no usage data anywhere unless you explicitly configure and run
 ## Install
 
 ```bash
-npm i -g token-tracker
+npm i -g github:A-Gift-Of-Flame/token-tracker
 tt today
 ```
 

@@ -116,6 +116,7 @@ function remoteStatus() {
     return {
         configured: !!remote,
         endpoint: remote ? remote.endpoint : null,
+        autoPush: remote ? !!remote.autoPush : false,
         pushedAt: state.remote ? state.remote.pushedAt : null,
     };
 }
