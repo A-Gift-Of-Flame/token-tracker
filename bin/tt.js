@@ -45,6 +45,9 @@ Local dashboard:
 Data:
   tt sync [--push|--no-push]   collect new usage from all agents; optionally push
                                (auto-push uses remote.json opt-in)
+  tt watch [--interval S]      always-on: sync+push every S seconds (default 60),
+                               no dashboard. Run under systemd/launchd/Task
+                               Scheduler to feed the VPS continuously.
   tt log --agent X --model Y --input N --output M
          [--cache-read N] [--cache-write N] [--ts ISO]   record manually
   tt agents                    list collectors and the inbox path
@@ -125,6 +128,15 @@ async function main() {
                 interval: args.flags.interval === undefined ? 60 : Number(args.flags.interval),
             });
             return; // server keeps the process alive until Ctrl-C
+        }
+
+        case 'watch': {
+            const { watch } = require('../src/watch');
+            await watch({
+                offline,
+                interval: args.flags.interval === undefined ? 60 : Number(args.flags.interval),
+            });
+            return; // the interval keeps the process alive until Ctrl-C
         }
 
         case 'sync': {
