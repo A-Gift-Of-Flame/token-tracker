@@ -128,25 +128,20 @@ async function main() {
         }
 
         case 'sync': {
-            const res = await sync({ offline });
+            // Push decision lives in sync(): --push forces, --no-push suppresses,
+            // otherwise remote.json autoPush drives it.
+            const push = args.flags['no-push'] ? false : (args.flags.push ? true : undefined);
+            const res = await sync({ offline, push });
             for (const [name, n] of Object.entries(res.added)) {
                 console.log(name.padEnd(12) + ' +' + n);
             }
             console.log('total new records: ' + res.total
                 + (res.pricing.live ? '' : '  (pricing: offline/stale table)'));
             for (const w of require('../src/budget').thresholdWarnings()) console.log(w);
-            if (!args.flags['no-push']) {
-                const remote = require('../src/remote');
-                const cfg = remote.loadRemote();
-                if (args.flags.push || (cfg && cfg.autoPush)) {
-                    try {
-                        printPushResult(await remote.push());
-                    } catch (err) {
-                        console.error('warning: auto-push failed: '
-                            + (err && err.message ? err.message : err)
-                            + ' (records kept locally, will retry next sync)');
-                    }
-                }
+            if (res.push) printPushResult(res.push);
+            else if (res.pushError) {
+                console.error('warning: auto-push failed: ' + res.pushError
+                    + ' (records kept locally, will retry next sync)');
             }
             return;
         }

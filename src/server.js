@@ -371,7 +371,11 @@ async function serve({ port = 7777, offline = false, interval = 60 } = {}) {
     let timer = null;
     if (interval > 0) {
         timer = setInterval(() => {
-            sync({ offline }).catch(() => { /* keep serving stored data */ });
+            sync({ offline })
+                .then((r) => {
+                    if (r.pushError) console.error('auto-push failed: ' + r.pushError + ' (will retry next sync)');
+                })
+                .catch(() => { /* keep serving stored data */ });
         }, interval * 1000);
         timer.unref(); // never keep the process alive on the timer alone
         server.once('close', () => clearInterval(timer));
