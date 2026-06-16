@@ -181,6 +181,38 @@ test('push with --since filters to newer records only', async () => {
     }
 });
 
+test('auto-push catches a late-flushed record with a past ts (insertion-order mark)', async () => {
+    const { dir, remote, store } = makeEnv();
+    const api = await serveIngest();
+    try {
+        remote.saveRemote({ token: 'test-token', endpoint: api.base });
+        // First push: a recent claude-code record advances the mark.
+        store.append([
+            { id: 'cc1', ts: '2026-06-14T12:00:00Z', agent: 'claude-code', model: 'm', input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, priced: false },
+        ]);
+        const first = await remote.push();
+        assert.equal(first.pushed, 1);
+
+        // An opencode session now flushes a batch timestamped BEFORE the first
+        // push. A ts-based mark would skip these forever; the offset mark must not.
+        store.append([
+            { id: 'oc1', ts: '2026-06-14T09:00:00Z', agent: 'opencode', model: 'm', input: 2, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, priced: false },
+            { id: 'oc2', ts: '2026-06-14T09:30:00Z', agent: 'opencode', model: 'm', input: 3, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0, priced: false },
+        ]);
+        const second = await remote.push();
+        assert.equal(second.pushed, 2, 'late past-dated records must push');
+        assert.equal(second.added, 2);
+        assert.deepEqual(api.requests[1].map((r) => r.id), ['oc1', 'oc2']);
+
+        // Nothing new -> no request.
+        const third = await remote.push();
+        assert.equal(third.pushed, 0);
+    } finally {
+        await api.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('push with nothing new returns zero counts without request', async () => {
     const { dir, remote } = makeEnv();
     const api = await serveIngest();

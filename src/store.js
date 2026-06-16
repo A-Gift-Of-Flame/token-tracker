@@ -75,6 +75,27 @@ function loadRange(fromIso, toIso) {
     return out;
 }
 
+// Insertion-order high-water mark for remote push. The store is append-only
+// per-month JSONL, so per-file record COUNT is a monotonic mark that survives
+// out-of-order timestamps — a record flushed late with a past ts still appends
+// to the end of its month file and lands beyond the saved count. (A ts-based
+// mark silently drops such records: opencode/codex write a whole session's
+// records at exit, all timestamped < the mark that claude-code already advanced
+// to ~now.) Returns the unpushed records plus the new per-file counts to persist
+// on a successful push. `offsets` maps "YYYY-MM" -> count already pushed.
+function loadUnpushed(offsets = {}) {
+    const records = [];
+    const counts = {};
+    for (const file of listMonthFiles()) {
+        const key = path.basename(file, '.jsonl');
+        const recs = readRecords(file);
+        counts[key] = recs.length;
+        const start = Math.min(offsets[key] || 0, recs.length);
+        for (let i = start; i < recs.length; i++) records.push(recs[i]);
+    }
+    return { records, counts };
+}
+
 // Parse every record in one month file (skips blank/corrupt lines).
 function readRecords(file) {
     const out = [];
@@ -102,4 +123,4 @@ function saveState(state) {
     writeJson(STATE_FILE, state);
 }
 
-module.exports = { append, loadRange, loadIds, loadState, saveState, listMonthFiles, readRecords, writeRecords };
+module.exports = { append, loadRange, loadUnpushed, loadIds, loadState, saveState, listMonthFiles, readRecords, writeRecords };

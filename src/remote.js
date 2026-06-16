@@ -3,8 +3,9 @@
 // BL-129: CLI push client. Zero-dep transport (global fetch / node:http+https
 // fallback). No background push — explicit tt push only. Token stored in
 // remote.json at 0600 so the plaintext is not readable by other users on the
-// host. High-water mark (pushedAt) in state.json so re-push is always
-// idempotent — the server dedups by (user_id, record id) anyway.
+// host. Insertion-order high-water mark (state.remote.offsets: per-month-file
+// pushed counts) so auto-push never drops late-flushed past-dated records;
+// re-push stays idempotent — the server dedups by (user_id, record id) anyway.
 
 const fs = require('fs');
 const path = require('path');
@@ -31,19 +32,32 @@ function saveRemote(cfg) {
     fs.chmodSync(REMOTE_FILE, 0o600);
 }
 
-// Push new ledger records to the remote /api/ingest endpoint. "New" = records
-// whose ts > pushedAt (or all records if no prior push). Re-push is safe —
-// the server returns duplicate counts but never double-stores.
+// Push new ledger records to the remote /api/ingest endpoint. Two selection
+// modes:
+//   default (auto-push / `tt push`): insertion-order high-water mark — every
+//     record appended since the last successful push, tracked as per-month-file
+//     counts in state.remote.offsets. This survives out-of-order timestamps
+//     (see store.loadUnpushed); a ts-based mark drops late-flushed past-dated
+//     records.
+//   `tt push --since ISO|all`: explicit ts-range backfill, unchanged. Re-push is
+//     safe either way — the server dedups by (user_id, record id).
 async function push(opts = {}) {
     const remote = loadRemote();
     if (!remote) throw new Error('no remote configured — run: tt login <token> --endpoint <URL>');
 
     const state = store.loadState();
-    const since = opts.since != null
-        ? (opts.since === 'all' ? null : opts.since)
-        : (state.remote && state.remote.pushedAt) || null;
+    state.remote = state.remote || {};
 
-    const records = store.loadRange(since, null).sort((a, b) => (a.ts < b.ts ? -1 : 1));
+    let records, newOffsets = null;
+    if (opts.since != null) {
+        const since = opts.since === 'all' ? null : opts.since;
+        records = store.loadRange(since, null).sort((a, b) => (a.ts < b.ts ? -1 : 1));
+    } else {
+        const unpushed = store.loadUnpushed(state.remote.offsets || {});
+        records = unpushed.records;
+        newOffsets = unpushed.counts;
+    }
+
     if (!records.length) {
         return { added: 0, duplicate: 0, invalid: 0, pushed: 0, endpoint: remote.endpoint };
     }
@@ -52,8 +66,10 @@ async function push(opts = {}) {
     const body = JSON.stringify(records);
     const result = await request(url, body, remote.token);
 
-    state.remote = state.remote || {};
     state.remote.pushedAt = new Date().toISOString();
+    // Advance the insertion-order mark only on success; on throw the offsets stay
+    // put and the same records retry next push.
+    if (newOffsets) state.remote.offsets = newOffsets;
     store.saveState(state);
 
     return { ...result, pushed: records.length, endpoint: remote.endpoint };
