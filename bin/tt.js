@@ -82,6 +82,9 @@ Data:
 Remote push (cloud tier — opt-in):
   tt login <token> --endpoint URL [--auto-push]
                                   save device token + server URL to remote.json (0600)
+  tt login --github --endpoint URL [--auto-push]
+                                  sign in with GitHub device flow, then save
+                                  the minted server device token
   tt push [--since ISO]            push new local records to the remote (idempotent)
   tt remote status                 show remote config + last-push timestamp
   tt remote auto-push on|off       push automatically after tt sync
@@ -480,9 +483,24 @@ async function main() {
         }
 
         case 'login': {
+            if (args.flags.github) {
+                const { loadRemote, loginWithGithubDevice } = require('../src/remote');
+                const existing = loadRemote();
+                const endpoint = args.flags.endpoint || (existing && existing.endpoint);
+                if (!endpoint) {
+                    console.error('need --endpoint <URL>, e.g. tt login --github --endpoint https://tt.example.com');
+                    process.exit(1);
+                }
+                await loginWithGithubDevice({
+                    endpoint,
+                    autoPush: !!args.flags['auto-push'],
+                    log: (m) => console.log(m),
+                });
+                return;
+            }
             const token = args._[1];
             if (!token) {
-                console.error('usage: tt login <token> --endpoint <URL>');
+                console.error('usage: tt login <token> --endpoint <URL>  OR  tt login --github --endpoint <URL>');
                 process.exit(1);
             }
             const endpoint = args.flags.endpoint;

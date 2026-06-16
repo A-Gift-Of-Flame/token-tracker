@@ -102,12 +102,15 @@ does not ship a baked-in endpoint.
 
 ```bash
 tt login <device-token> --endpoint https://your-token-tracker.example
+tt login --github --endpoint https://your-token-tracker.example
 tt push
 tt remote status
 ```
 
 `tt push` uploads local ledger records to `/api/ingest` on the endpoint you
 configured. Pushes are explicit and idempotent; the server dedupes by record id.
+`tt login --github` uses GitHub's device flow through your configured server and
+saves the minted device token locally, same as the token login path.
 
 ## Data And Privacy
 

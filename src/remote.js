@@ -32,6 +32,54 @@ function saveRemote(cfg) {
     fs.chmodSync(REMOTE_FILE, 0o600);
 }
 
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function loginWithGithubDevice(opts = {}) {
+    const endpoint = String(opts.endpoint || '').replace(/\/$/, '');
+    if (!endpoint) throw new Error('need --endpoint <URL>, e.g. tt login --github --endpoint https://tt.example.com');
+    const log = opts.log || console.log;
+    const sleeper = opts.sleep || sleep;
+
+    const start = await jsonRequest('POST', endpoint + '/api/auth/github/device/start', {});
+    if (!start.body || !start.body.poll_token) throw new Error('server did not return a GitHub device poll token');
+
+    log('GitHub device login');
+    log('open: ' + (start.body.verification_uri_complete || start.body.verification_uri));
+    log('code: ' + start.body.user_code);
+    log('waiting for authorization...');
+
+    let intervalMs = opts.pollMs != null
+        ? Number(opts.pollMs)
+        : Math.max(1, Number(start.body.interval || 5)) * 1000;
+    const expiresAt = Date.now() + Math.max(1, Number(start.body.expires_in || 900)) * 1000;
+
+    while (Date.now() < expiresAt) {
+        await sleeper(intervalMs);
+        const poll = await jsonRequest('POST', endpoint + '/api/auth/github/device/poll', {
+            poll_token: start.body.poll_token,
+        }, { allowStatuses: new Set([200, 202, 403, 410, 409, 502]) });
+
+        if (poll.status === 202) {
+            if (poll.body && poll.body.status === 'slow_down') {
+                intervalMs = poll.body.interval ? Math.max(intervalMs, Number(poll.body.interval) * 1000) : intervalMs + 5000;
+            }
+            continue;
+        }
+        if (poll.status === 200 && poll.body && poll.body.status === 'complete' && poll.body.token) {
+            saveRemote({ token: poll.body.token, endpoint, autoPush: !!opts.autoPush });
+            log('saved remote config (remote.json)');
+            log('endpoint: ' + endpoint);
+            if (opts.autoPush) log('auto-push: on');
+            return { token: poll.body.token, endpoint, autoPush: !!opts.autoPush };
+        }
+        const msg = poll.body && poll.body.error ? poll.body.error : 'GitHub device login failed';
+        throw new Error(msg);
+    }
+    throw new Error('GitHub device login expired');
+}
+
 // Push new ledger records to the remote /api/ingest endpoint. Two selection
 // modes:
 //   default (auto-push / `tt push`): insertion-order high-water mark — every
@@ -126,6 +174,52 @@ function nativePost(url, body, token) {
     });
 }
 
+function jsonRequest(method, url, body, opts = {}) {
+    return new Promise((resolve, reject) => {
+        const raw = body === undefined ? '' : JSON.stringify(body);
+        const u = new URL(url);
+        const lib = u.protocol === 'https:' ? https : http;
+        const headers = {
+            accept: 'application/json',
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(raw),
+        };
+        const req = lib.request({
+            hostname: u.hostname,
+            port: u.port || (u.protocol === 'https:' ? 443 : 80),
+            path: u.pathname + u.search,
+            method,
+            headers,
+        }, (res) => {
+            const chunks = [];
+            let size = 0;
+            res.on('data', (c) => {
+                size += c.length;
+                if (size > 1024 * 1024) {
+                    req.destroy(new Error('response too large'));
+                    return;
+                }
+                chunks.push(c);
+            });
+            res.on('end', () => {
+                const text = Buffer.concat(chunks).toString('utf8');
+                let parsed = {};
+                try { parsed = text ? JSON.parse(text) : {}; } catch (err) { return reject(err); }
+                const ok = res.statusCode >= 200 && res.statusCode < 300;
+                const allowed = opts.allowStatuses && opts.allowStatuses.has(res.statusCode);
+                if (!ok && !allowed) {
+                    const msg = parsed && parsed.error ? parsed.error : text.slice(0, 200);
+                    return reject(new Error('request failed (' + res.statusCode + '): ' + msg));
+                }
+                resolve({ status: res.statusCode, body: parsed });
+            });
+        });
+        req.on('error', reject);
+        if (raw) req.write(raw);
+        req.end();
+    });
+}
+
 function remoteStatus() {
     const remote = loadRemote();
     const state = store.loadState();
@@ -137,4 +231,4 @@ function remoteStatus() {
     };
 }
 
-module.exports = { REMOTE_FILE, loadRemote, saveRemote, push, remoteStatus };
+module.exports = { REMOTE_FILE, loadRemote, saveRemote, push, remoteStatus, loginWithGithubDevice };

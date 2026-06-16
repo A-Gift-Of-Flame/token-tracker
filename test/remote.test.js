@@ -10,6 +10,7 @@ const fs = require('fs');
 const http = require('node:http');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 
 function makeTempDir() {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'tt-remote-test-'));
@@ -67,6 +68,39 @@ async function serveIngest() {
         ids,
         requests,
         close: () => new Promise((resolve) => server.close(resolve)),
+    };
+}
+
+function mockHttpJson(responses) {
+    const original = http.request;
+    const calls = [];
+    http.request = (options, cb) => {
+        const chunks = [];
+        const req = new EventEmitter();
+        req.write = (c) => chunks.push(Buffer.from(c));
+        req.destroy = (err) => { if (err) req.emit('error', err); };
+        req.end = () => {
+            const next = responses.shift();
+            if (!next) throw new Error('unexpected HTTP request');
+            const body = Buffer.concat(chunks).toString('utf8');
+            calls.push({ options, body });
+            if (next.assert) next.assert(options, body);
+            process.nextTick(() => {
+                const res = new EventEmitter();
+                res.statusCode = next.status;
+                cb(res);
+                res.emit('data', Buffer.from(JSON.stringify(next.body || {})));
+                res.emit('end');
+            });
+        };
+        return req;
+    };
+    return {
+        calls,
+        restore() {
+            http.request = original;
+            assert.equal(responses.length, 0);
+        },
     };
 }
 
@@ -224,6 +258,98 @@ test('push with nothing new returns zero counts without request', async () => {
         assert.equal(api.requests.length, 0);
     } finally {
         await api.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('loginWithGithubDevice polls server and saves minted device token', async () => {
+    const { dir, remote } = makeEnv();
+    const mock = mockHttpJson([
+        {
+            status: 200,
+            assert(options, body) {
+                assert.equal(options.hostname, 'tt.example.test');
+                assert.equal(options.path, '/api/auth/github/device/start');
+                assert.equal(body, '{}');
+            },
+            body: {
+                user_code: 'ABCD-1234',
+                verification_uri: 'https://github.com/login/device',
+                verification_uri_complete: 'https://github.com/login/device?user_code=ABCD-1234',
+                expires_in: 900,
+                interval: 1,
+                poll_token: 'signed-poll-token',
+            },
+        },
+        {
+            status: 202,
+            assert(options, body) {
+                assert.equal(options.path, '/api/auth/github/device/poll');
+                assert.deepEqual(JSON.parse(body), { poll_token: 'signed-poll-token' });
+            },
+            body: { status: 'pending' },
+        },
+        {
+            status: 200,
+            assert(options, body) {
+                assert.equal(options.path, '/api/auth/github/device/poll');
+                assert.deepEqual(JSON.parse(body), { poll_token: 'signed-poll-token' });
+            },
+            body: { status: 'complete', token: '42.' + 'a'.repeat(64) },
+        },
+    ]);
+    const logs = [];
+    try {
+        const result = await remote.loginWithGithubDevice({
+            endpoint: 'http://tt.example.test/',
+            autoPush: true,
+            pollMs: 0,
+            sleep: async () => {},
+            log: (m) => logs.push(m),
+        });
+        assert.equal(result.token, '42.' + 'a'.repeat(64));
+        assert.equal(result.endpoint, 'http://tt.example.test');
+
+        const saved = remote.loadRemote();
+        assert.equal(saved.token, '42.' + 'a'.repeat(64));
+        assert.equal(saved.endpoint, 'http://tt.example.test');
+        assert.equal(saved.autoPush, true);
+        assert.equal(mock.calls.filter((c) => c.options.path === '/api/auth/github/device/poll').length, 2);
+        assert.ok(logs.some((l) => l.includes('ABCD-1234')));
+    } finally {
+        mock.restore();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('loginWithGithubDevice denied response does not save remote config', async () => {
+    const { dir, remote } = makeEnv();
+    const mock = mockHttpJson([
+        {
+            status: 200,
+            body: {
+                user_code: 'ABCD-1234',
+                verification_uri: 'https://github.com/login/device',
+                expires_in: 900,
+                interval: 1,
+                poll_token: 'signed-poll-token',
+            },
+        },
+        { status: 403, body: { status: 'denied', error: 'GitHub device flow denied' } },
+    ]);
+    try {
+        await assert.rejects(
+            remote.loginWithGithubDevice({
+                endpoint: 'http://tt.example.test',
+                pollMs: 0,
+                sleep: async () => {},
+                log: () => {},
+            }),
+            /denied/
+        );
+        assert.equal(remote.loadRemote(), null);
+    } finally {
+        mock.restore();
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });
