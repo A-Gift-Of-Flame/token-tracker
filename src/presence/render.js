@@ -110,10 +110,67 @@ function renderPresenceActivity(state, opts = {}) {
     return activity;
 }
 
+function backgroundCost(states) {
+    let amount = 0;
+    let seen = false;
+    let exact = true;
+    for (const state of states) {
+        const cost = state && state.cost;
+        if (!cost || !Number.isFinite(cost.amount)) {
+            exact = false;
+            continue;
+        }
+        seen = true;
+        amount += cost.amount;
+        if (cost.estimated || cost.estimateFlag || (!cost.exact && !cost.exactFlag)) exact = false;
+    }
+    if (!seen) return null;
+    return {
+        amount,
+        currency: 'USD',
+        exact,
+        exactFlag: exact,
+        estimated: !exact,
+        estimateFlag: !exact,
+    };
+}
+
+function backgroundTokens(states) {
+    let total = 0;
+    let seen = false;
+    for (const state of states) {
+        const tokens = tokenTotal(state && state.tokens);
+        if (tokens === null) continue;
+        seen = true;
+        total += tokens;
+    }
+    return seen ? total : null;
+}
+
+function renderMultiplexActivity(combined, opts = {}) {
+    if (!combined || combined.status === 'idle' || !combined.headline) {
+        return renderPresenceActivity({ status: 'idle' }, opts);
+    }
+    const activity = renderPresenceActivity(combined.headline, opts);
+    const background = Array.isArray(combined.background) ? combined.background : [];
+    if (!background.length) return activity;
+
+    const tokens = backgroundTokens(background);
+    const tail = '+' + background.length + ' bg'
+        + ' · ' + formatCost(backgroundCost(background))
+        + ' · ' + (tokens === null ? 'tokens missing' : shortNumber(tokens) + ' tok');
+    const suffix = ' · ' + tail;
+    activity.state = truncate(
+        truncate(activity.state, Math.max(1, 128 - suffix.length)) + suffix
+    );
+    return activity;
+}
+
 module.exports = {
     DEFAULT_FRESHNESS_MS,
     ageLabel,
     formatCost,
+    renderMultiplexActivity,
     renderPresenceActivity,
     shortNumber,
 };

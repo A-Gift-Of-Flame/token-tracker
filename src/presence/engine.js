@@ -4,12 +4,15 @@ const EventEmitter = require('events');
 const path = require('path');
 const { ROOT, readJson } = require('../paths');
 const { DiscordIPC } = require('./discord-ipc');
-const { renderPresenceActivity } = require('./render');
+const { PresenceMultiplexer } = require('./multiplex');
+const { renderMultiplexActivity, renderPresenceActivity } = require('./render');
 const { StorePresenceSource, DEFAULT_FRESHNESS_MS, DEFAULT_POLL_MS } = require('./source');
 
 const DEFAULT_CLIENT_ID = '1511532478492315821';
 const PRESENCE_FILE = path.join(ROOT, 'presence.json');
-const PRESENCE_SOURCES = new Set(['store', 'claude', 'codex', 'gemini', 'opencode']);
+const LIVE_AGENT_SOURCES = ['claude', 'codex', 'gemini', 'opencode'];
+const PRESENCE_SOURCES = new Set(['store', ...LIVE_AGENT_SOURCES, 'all']);
+const SOURCE_TIERS = { claude: 2, codex: 1, gemini: 1, opencode: 1 };
 
 function loadPresenceConfig() {
     return readJson(PRESENCE_FILE, {}) || {};
@@ -138,12 +141,23 @@ async function runPresence(opts = {}) {
         throw new Error('unknown presence source: ' + sourceName
             + ' (want: ' + Array.from(PRESENCE_SOURCES).join('|') + ')');
     }
-    const source = opts.presenceSource || createPresenceSource(sourceName, { ...opts, pollMs, freshnessMs });
+    const multiplex = sourceName === 'all';
+    const source = opts.presenceSource || (multiplex
+        ? new PresenceMultiplexer({
+            freshnessMs,
+            sources: LIVE_AGENT_SOURCES.map((name) => ({
+                name,
+                tier: SOURCE_TIERS[name],
+                source: createPresenceSource(name, { ...opts, pollMs, freshnessMs }),
+            })),
+        })
+        : createPresenceSource(sourceName, { ...opts, pollMs, freshnessMs }));
     const engine = new PresenceEngine({
         clientId: opts.clientId || resolveClientId(cfg),
         pollMs,
         freshnessMs,
         source,
+        render: multiplex ? ((state) => renderMultiplexActivity(state, { freshnessMs })) : undefined,
         stdout: opts.stdout,
         stderr: opts.stderr,
         processObj: opts.processObj,
@@ -160,9 +174,11 @@ async function runPresence(opts = {}) {
 
 module.exports = {
     DEFAULT_CLIENT_ID,
+    LIVE_AGENT_SOURCES,
     PRESENCE_FILE,
     PRESENCE_SOURCES,
     PresenceEngine,
+    SOURCE_TIERS,
     createPresenceSource,
     loadPresenceConfig,
     resolveClientId,

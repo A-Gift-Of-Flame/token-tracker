@@ -43,12 +43,12 @@ Local dashboard:
                                (default port 7777; GET /api/<period>?by=<grouping>)
 
 Discord presence (opt-in):
-  tt presence [--interval S] [--fresh S] [--source NAME]
+  tt presence [--interval S] [--fresh S] [--source NAME] [--all]
                                connect Discord IPC, publish truthful local usage
                                presence, clear on Ctrl-C (default interval 5s;
                                records older than --fresh seconds show stale)
                                sources: store (default), claude, codex,
-                               gemini, opencode
+                               gemini, opencode; --all multiplexes live agents
   tt presence install          opt in: add Claude Code SessionStart/SessionEnd
                                hooks for the bounded presence daemon
   tt presence uninstall        remove token-tracker Claude Code presence hooks
@@ -215,7 +215,8 @@ async function main() {
             const { runPresence } = require('../src/presence/engine');
             const interval = args.flags.interval === undefined ? undefined : Number(args.flags.interval);
             const fresh = args.flags.fresh === undefined ? undefined : Number(args.flags.fresh);
-            const sourceName = args.flags.source === undefined ? undefined : String(args.flags.source);
+            const sourceName = args.flags.all ? 'all'
+                : (args.flags.source === undefined ? undefined : String(args.flags.source));
             if (interval !== undefined && (!Number.isFinite(interval) || interval <= 0)) {
                 console.error('--interval needs a positive number of seconds');
                 process.exit(1);
