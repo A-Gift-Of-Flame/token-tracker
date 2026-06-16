@@ -57,8 +57,12 @@ Data:
   tt sync [--push|--no-push]   collect new usage from all agents; optionally push
                                (auto-push uses remote.json opt-in)
   tt watch [--interval S]      always-on: sync+push every S seconds (default 60),
-                               no dashboard. Run under systemd/launchd/Task
-                               Scheduler to feed the VPS continuously.
+                               no dashboard (foreground; Ctrl-C to stop).
+  tt service install           install + start the always-on watcher as a boot
+         [--interval S]        service (systemd / launchd / Scheduled Task —
+                               auto-detected). Survives reboots and crashes.
+  tt service uninstall         stop and remove the boot service.
+  tt service status            show whether the boot service is running.
   tt log --agent X --model Y --input N --output M
          [--cache-read N] [--cache-write N] [--ts ISO]   record manually
   tt agents                    list collectors and the inbox path
@@ -151,6 +155,25 @@ async function main() {
                 interval: args.flags.interval === undefined ? 60 : Number(args.flags.interval),
             });
             return; // the interval keeps the process alive until Ctrl-C
+        }
+
+        case 'service': {
+            const service = require('../src/service');
+            const sub = args._[1] || 'install';
+            let r;
+            if (sub === 'install') {
+                r = service.install({ interval: args.flags.interval });
+            } else if (sub === 'uninstall' || sub === 'remove') {
+                r = service.uninstall();
+            } else if (sub === 'status') {
+                r = service.status();
+            } else {
+                console.error('unknown service subcommand: ' + sub + ' (try: install|uninstall|status)');
+                process.exit(1);
+            }
+            console.log(r.message);
+            if (!r.ok) process.exit(1);
+            return;
         }
 
         case 'presence': {
