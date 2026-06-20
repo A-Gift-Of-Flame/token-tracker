@@ -1,0 +1,112 @@
+# PROJECT_STATE.yaml - Structured current truth (public client)
+
+metadata:
+  product: token-tracker
+  repo_scope: public_client
+  execution_mode: operating
+  updated_at: "2026-06-20"
+  related_private_repo: token-tracker-server   # cloud tier, separate, private
+
+workflow:
+  model: human_in_the_loop
+  lanes:
+    ceo: human; provides state, priorities, handoffs
+    cto: Claude Opus 4.8 in Claude Code; reconstructs truth, reviews handoffs, writes coding-agent prompts
+    coding_agent: Codex (codex exec --sandbox workspace-write)
+  read_order:
+    - AGENTS.md
+    - STATUS.md
+    - PROJECT_STATE.yaml
+    - PROJECT_DNA.yaml
+    - NEXT_ACTIONS.md
+  bootstrap:
+    system_investigated: true
+    repo_investigated: true
+
+verification_labels:
+  observed: verified directly now
+  reported: supported by prior evidence
+  assumed: provisional working assumption
+  blocked: verification currently prevented
+  unknown: not yet determined
+  stale: previously verified, aged out
+  invalid: known false or superseded
+
+current_state:
+  runtime:
+    language: Node.js (CommonJS)
+    node_floor: ">=22 (node:sqlite for OpenCode/Cursor collectors)"
+    dependencies: zero npm deps (stdlib only)
+    entrypoint: bin/tt.js
+    data_dir: "~/.token-tracker (override TOKEN_TRACKER_DIR)"
+    ports: none for the CLI; `tt serve` binds localhost on demand
+
+  distribution:
+    status: observed
+    channel: "github install — npm i -g github:A-Gift-Of-Flame/token-tracker"
+    npm_name_note: "bare 'token-tracker' is squatted by an unrelated module; GitHub install is official"
+    repo: "github.com/A-Gift-Of-Flame/token-tracker (public, clean history)"
+
+  cli:
+    status: observed
+    commands: [sync, today/week/month/year/all, last, log, agents, pricing, subsidy, budget, export, reprice, import, serve, presence, login, push, remote]
+    flags: ["--last N", "--trend", "--compact", "--vs last", "--efficiency", "--by <grouping>", "--forecast", "--json", "--no-sync"]
+
+  collectors:
+    status: observed
+    sources:
+      - claude-code
+      - codex            # ~/.codex/sessions
+      - gemini-cli       # ~/.gemini/.../session-*.jsonl
+      - opencode         # opencode.db (node:sqlite)
+      - copilot-cli      # ~/.copilot/session-state/*/events.jsonl
+      - cursor           # ~/.cursor/chats/.../store.db (protobuf-in-sqlite; output=0, $0)
+      - dropbox          # JSONL inbox / tt log
+    invariant: collectors never mutate source files; ingest idempotent
+
+  pricing:
+    status: observed
+    source: LiteLLM community table, 24h local cache, Claude fallback
+    local_providers: hard-priced $0 (e.g. ollama)
+    policy: cost computed at ingest (price-at-the-time); cache-write TTL tiers
+
+  subsidy:
+    status: observed
+    module: src/subscriptions.js
+    detection: local only (Codex chatgpt_plan_type, Claude subscriptionType)
+    derived: net (API-equiv spend - prorated fee), coverage (spend / fee), crossover/break-even
+    invariant: stored cost stays metered; subsidy never written back
+
+  dashboard:
+    status: observed
+    command: "tt serve [--port N] [--interval S]"
+    impl: zero-dep node:http + hand-rolled HTML/CSS/SVG
+    auto_sync: foreground unref'd in-process timer (default 60s, 0 disables) — not a daemon
+    open_gap: "BL-152 — updates on fixed POLL_MS poll, not on ingest event"
+
+  presence:
+    status: observed   # ADR 0002 ratified; epic shipped
+    command: "tt presence [--source ...] [--all] [install|uninstall|launch|daemon|session-end]"
+    ceilings: {claude_code: hook-rich, codex: live-tail, gemini: live-tail, opencode: live-tail, copilot: session-end, cursor: session-end}
+    multiplexer: "BL-147 slice 1 — headline by interactivity tier + recency, labelled bg aggregate"
+    service: "BL-148 — optional always-on token-tracker-presence service"
+    daemon_carveout: opt-in, bounded, single-instance, clears on watched-agent pid death
+    deprecated: claude-discord-rpc (v0.2.0 final, archived)
+
+  cloud_touchpoints:
+    status: observed
+    scope: client-side only (src/remote.js)
+    commands: ["tt login <token>|--github --endpoint URL", "tt push [--since|all]", "tt remote status", "tt remote auto-push on|off"]
+    note: server side (auth, ingest API, multi-tenant dashboard, deploy) is the PRIVATE server repo
+    invariant: off by default; nothing leaves the machine unless the user configures login + push
+
+active_problems:
+  - id: BL-147
+    summary: multi-agent presence beyond slice 1 (user-configurable tier/override)
+    state: open
+  - id: BL-149
+    summary: presence skill-heartbeat advisory signal source
+    state: open
+  - id: BL-152
+    summary: tt serve dashboard event/ingest-driven update vs fixed poll
+    state: open

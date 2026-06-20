@@ -1,0 +1,152 @@
+# PROJECT_DNA.yaml - Canonical architecture blueprint (public client)
+
+version: "statedd-template-v3"
+schema_version: "1.0"
+
+product:
+  name: "token-tracker"
+  one_sentence: "Zero-dependency CLI + local dashboard that tracks AI agent token usage (input/output/cache) across Claude Code, Codex, Gemini CLI, OpenCode, Copilot CLI, Cursor and any other agent, prices it live, reports by day/week/month/year, shows how much a flat-rate subscription subsidizes that usage vs metered API, and renders agent-agnostic Discord Rich Presence."
+  description: |
+    Local-first usage ledger. Collectors read each agent's own on-disk logs
+    (transcripts, rollouts, sqlite), normalize them into per-request JSONL
+    records, price them from the LiteLLM community table at ingest time, and
+    report aggregates in the terminal. Agents without a dedicated collector
+    are covered by `tt log` and a drop-in JSONL inbox. An opt-in presence
+    subsystem renders live Discord activity from the same parse logic.
+  is:
+    - local_first
+    - zero_dependency
+    - on_demand_sync_cli
+    - idempotent_ingestion
+    - plain_jsonl_storage
+    - live_priced_at_ingest
+  is_not:
+    - background_daemon          # default CLI client; the opt-in presence daemon is the one explicit carve-out
+    - database_backed
+    - vps_or_cloud_deployed
+    - telemetry_emitting         # no implicit telemetry; `tt push` to the cloud tier is explicit, user-configured, opt-in
+
+  # The opt-in cloud tier (`tt login` + `tt push` to a hosted server) lives in a
+  # SEPARATE PRIVATE repo (token-tracker-server). From this client's view it is
+  # just an explicit, user-configured outbound upload — nothing ships to any
+  # server by default and no local-core invariant below is relaxed by it.
+  #
+  # Presence (BL-140 epic) folds in / deprecates the standalone claude-discord-rpc
+  # plugin as agent-agnostic Discord Rich Presence. The default install starts zero
+  # presence processes. Only a user-enabled presence path may auto-launch a bounded
+  # daemon, and that daemon must watch exactly one active agent, read logs passively,
+  # and clear/self-exit when the watched agent dies.
+
+truth_rules:
+  contract_files:
+    agents: AGENTS.md
+    status: STATUS.md
+    project_state: PROJECT_STATE.yaml
+    project_dna: PROJECT_DNA.yaml
+    project_adapter: PROJECT_ADAPTER.yaml
+    next_actions: NEXT_ACTIONS.md
+    backlog: BACKLOG.md
+    worklog: WORKLOG.md
+    evidence_log: docs/EVIDENCE_LOG.md
+    acceptance_freezes: docs/ACCEPTANCE_FREEZES.md
+
+  hard_rules:
+    - no_fake_completeness
+    - no_history_in_live_state
+    - evidence_required_for_user_facing_claims
+    - runtime_identity_required_for_user_facing_acceptance
+    - negative_search_results_do_not_prove_nonexistence
+    - clean_worktree_required_at_handoff
+    - active_queue_remains_short
+    - no_server_internals_in_public_repo
+
+  claim_states:
+    observed: verified directly now
+    unknown: not yet determined from available evidence
+    reported: supported by prior evidence
+    blocked: verification currently prevented
+    assumed: provisional working assumption
+    stale: previously verified but aged out
+    invalid: known false or superseded
+
+  repo_modes:
+    bootstrap:
+      purpose: discover truth and establish baseline state
+      exit_condition: baseline completed and mode flipped to operating
+    operating:
+      purpose: steady-state human-in-the-loop delivery
+      exit_condition: none
+
+architecture:
+  cli:
+    description: "bin/tt.js — argument parsing and commands (sync, reports, log, agents, pricing, subsidy, budget, export, reprice, serve, presence, login/push). Reports auto-sync unless --no-sync."
+  collectors:
+    description: |
+      src/collectors/*.js — one module per agent source, each exporting
+      { name, collect(state) }. Incremental via per-collector state (file
+      byte offsets, sqlite timestamps). claude-code, codex, gemini-cli,
+      opencode, copilot-cli, cursor, dropbox (inbox). New agents = new module
+      registered in src/collectors/index.js.
+  store:
+    description: "src/store.js — append-only JSONL, one file per month (~/.token-tracker/data/YYYY-MM.jsonl). Every record carries a unique id; sync dedups against the full id set, so lost state never double-counts."
+  pricing:
+    description: "src/pricing.js — LiteLLM price table fetched at most every 24h, cached locally; built-in Claude fallback; local providers (ollama etc.) hard-priced at $0. Cost computed at ingest (price-at-the-time)."
+  reporting:
+    description: "src/report.js — period windows (today/week/month/year/all + --last N rolling, local time, Monday weeks) and grouping (agent/model/agent-model/day/month/project), terminal tables, --trend sparkline, --compact cost-only, --vs compare, --efficiency, --forecast, --json."
+  subscriptions:
+    description: "src/subscriptions.js — subscription subsidy. Detects the plan in use locally (Codex/ChatGPT chatgpt_plan_type from ~/.codex/auth.json id_token; Claude subscriptionType from ~/.claude/.credentials.json), looks up a web-configurable monthly fee (subscriptions.json, seeded defaults), and derives net subsidy (API-equiv spend − prorated fee) and coverage (spend ÷ fee). Never mutates stored cost. `tt subsidy`."
+  server:
+    description: "src/server.js — on-demand LOCAL dashboard (`tt serve`, localhost only, no daemon). Zero-dep node:http + hand-rolled HTML/CSS/SVG (editorial theme, KPI cards, daily-cost bars, share bars, subsidy coverage bars, editable fees). JSON API: GET /api/<period>, GET /api/subsidy, GET/POST /api/subscriptions, POST /api/sync. Foreground in-process refresh timer (`--interval S`, default 60s, 0 disables), unref'd."
+  remote:
+    description: "src/remote.js — opt-in cloud client. `tt login <token> --endpoint URL`, `tt push [--since|all]`, `tt remote status`, persisted autoPush. Uploads existing store records via export.ledger JSONL to a private hosted server (separate repo). Off unless the user configures it."
+  presence:
+    status: ratified   # ADR 0002 (docs/adr/0002) Accepted by user 2026-06-15
+    description: |
+      OPT-IN agent-agnostic Discord Rich Presence. Absorbs and deprecates the
+      standalone claude-discord-rpc plugin. One presence engine renders Discord
+      activity from a pluggable presence-source abstraction: one adapter per agent,
+      each reusing that collector's parse logic and declaring its own richness
+      ceiling. Claude Code reaches full richness via opt-in SessionStart/SessionEnd
+      hooks that launch a bounded transcript-tail daemon. Codex/Gemini/OpenCode are
+      live log-tail sources (~1-2s lag); Copilot CLI and Cursor are session-end only.
+      Discord IPC is a zero-dependency node:net port of the DRPC client (framed JSON
+      over Discord's local IPC socket). Foreground `tt presence` is invariant-clean
+      like `tt serve`; the detached presence-daemon is the additive, explicitly opt-in
+      carve-out, auto-launched for a watched agent and required to clear/self-exit on
+      that agent's death. A multiplexer (BL-147) collapses concurrent agents to one
+      slot: headline by interactivity tier + recency, labelled background aggregate.
+
+invariants:
+  # --- Local core (CLI + collectors + local store + `tt serve`) ---
+  - "Zero npm dependencies. Node stdlib only (node:sqlite allowed, Node >= 22, degrade gracefully)."
+  - "No background daemon, no database, no server deployment in the default CLI client outside the explicitly opt-in presence-daemon carve-out below. Sync runs on demand at CLI invocation. `tt serve` may auto-sync on a foreground in-process timer (configurable, default 60s, 0 disables); the timer is unref'd and dies with the process — nothing outlives the foreground command or polls the source logs when no `tt` process is running."
+  - "No usage data leaves the machine by default. Outbound requests are: the public pricing table fetch, and — only when the user has run `tt login` + `tt push` (opt-in cloud tier) — the explicit record upload they invoked. No implicit telemetry, ever."
+  - "`tt push` is explicit and opt-in. The CLI ships nothing to any server unless the user configured a remote and ran the command. The independent path never requires a third party; GitHub OAuth is additive, never the only way in."
+  - "Ingestion is idempotent: unique record ids, dedup against the store on every sync."
+  - "Storage stays plain JSONL, human-greppable."
+  - "Stored record cost is always the metered API price of the tokens. Subscription subsidy is a derived view computed at report time, never written back."
+  - "The dashboard adds no runtime npm dependencies: hand-rolled HTML/CSS/SVG, no chart library."
+  - "Collectors never mutate the source agent's files."
+  # --- Presence (BL-140 epic) ---
+  - "Presence is opt-in and off by default. A default install starts zero presence processes; no presence daemon exists until the user enables presence."
+  - "The presence daemon is the sole bounded client-side exception to the no-background-daemon invariant. It may auto-launch on watched-agent start, must be single-instance guarded, and must clear/self-exit when that watched agent dies; nothing may outlive the active agent session."
+  - "Presence is passive and read-only over agent logs and status surfaces. It never mutates source files, never writes prompts, never touches the model, and consumes zero model tokens."
+  - "Presence keeps the zero-dependency invariant: Discord IPC is hand-rolled with node:net using framed JSON over Discord's local IPC socket; no RPC or chart/runtime package is added."
+  - "Presence values truthfulness over apparent richness. It never fabricates or overstates live state: stale/session-end data is not presented as live, estimated cost is labelled as estimated, exact cost is labelled only when exact, and missing fields remain missing. Truthfulness governs accuracy, not exposure: presence is a public surface and controlling Discord visibility is the user's responsibility (presence is opt-in)."
+  - "Concurrent agents collapse to one Discord slot (single activity per client_id). The multiplexer shows a headline agent (by interactivity tier + recency) plus a labelled background aggregate where every number is real and attributed — never a blended cross-attributed state."
+  # --- Repo hygiene ---
+  - "STATUS.md stays short and current."
+  - "WORKLOG.md is append-only."
+  - "BACKLOG.md assigns stable backlog IDs."
+  - "No server internals (VPS host/IP, deploy config, session secrets, server auth internals) ever land in this public repo."
+
+governance:
+  evidence_standard: cli_output_or_test_output
+  evidence_artifact_root: docs/evidence
+  acceptance_freeze_log: docs/ACCEPTANCE_FREEZES.md
+  hygiene_check: scripts/check_state_docs.py
+  update_policy:
+    status: when_current_truth_changes
+    project_state: when_structured_truth_changes
+    worklog: when_work_is_completed
+    evidence_log: when_user_facing_claims_are_verified

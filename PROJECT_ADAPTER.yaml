@@ -1,0 +1,43 @@
+# PROJECT_ADAPTER.yaml - Project-specific adapter
+
+version: "statedd-template-v3"
+
+project:
+  name: token-tracker
+  short_name: tt
+  description: "Local CLI tracking AI agent token usage with live pricing and period reports."
+
+vocabulary:
+  control_plane_name: "CLI commands"
+  state_plane_name: "JSONL store + collector state"
+  evidence_plane_name: "CLI output captures"
+  runtime_identity_name: "node bin/tt.js from this repo"
+
+runtime:
+  frontend_port: null
+  api_port: null
+  public_url: null
+  execution_mode: operating
+  runtime_identity_surface: "terminal: `node bin/tt.js <cmd>` (or `tt` after npm link); data dir ~/.token-tracker (TOKEN_TRACKER_DIR override)"
+
+integrations:
+  - name: claude-code
+    kind: log_source
+    path: ~/.claude/projects/**/*.jsonl
+    status: observed
+  - name: codex-cli
+    kind: log_source
+    path: ~/.codex/sessions/**/*.jsonl
+    status: assumed   # collector written from documented format; no ~/.codex on this host
+  - name: opencode
+    kind: sqlite_source
+    path: ~/.local/share/opencode/opencode.db
+    status: observed
+  - name: litellm-pricing
+    kind: http_fetch
+    url: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+    status: observed
+
+notes:
+  - "No ports, no services. Runtime identity = which checkout's bin/tt.js ran and which TOKEN_TRACKER_DIR it wrote to."
+  - "Evidence = pasted CLI output with command shown, or files under docs/evidence/."
