@@ -209,7 +209,7 @@ function report(period, by, opts = {}) {
         if (table) cacheSaved += cacheSavings(table, r.model, r.provider, r);
     }
     const rows = [...groups.values()].sort((a, b) =>
-        by === 'day' || by === 'month' ? (a.key < b.key ? -1 : 1) : b.cost - a.cost || b.output - a.output);
+        by === 'day' || by === 'month' ? (a.key < b.key ? 1 : -1) : b.cost - a.cost || b.output - a.output);
     const result = { label, rows, total };
     if (opts.efficiency) result.efficiency = computeEfficiency(total, cacheSaved);
     if (opts.trend) result.trend = buildTrend(records, from);
