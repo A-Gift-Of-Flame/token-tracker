@@ -1,11 +1,13 @@
 'use strict';
 
-// BL-129: CLI push client. Zero-dep transport (global fetch / node:http+https
-// fallback). No background push — explicit tt push only. Token stored in
-// remote.json at 0600 so the plaintext is not readable by other users on the
-// host. Insertion-order high-water mark (state.remote.offsets: per-month-file
-// pushed counts) so auto-push never drops late-flushed past-dated records;
-// re-push stays idempotent — the server dedups by (user_id, record id) anyway.
+// CLI push client. Single-tenant: the server is hardcoded (DEFAULT_ENDPOINT),
+// overridable only via TT_ENDPOINT for local dev. remote.json stores just the
+// device token + autoPush flag at 0600 so the plaintext is not readable by
+// other users on the host — the endpoint is no longer a per-config value.
+// Zero-dep transport (global fetch / node:http+https fallback). Insertion-order
+// high-water mark (state.remote.offsets: per-month-file pushed counts) so
+// auto-push never drops late-flushed past-dated records; re-push stays
+// idempotent — the server dedups by (user_id, record id) anyway.
 
 const fs = require('fs');
 const path = require('path');
@@ -15,6 +17,13 @@ const { ROOT } = require('./paths');
 const store = require('./store');
 
 const REMOTE_FILE = path.join(ROOT, 'remote.json');
+const DEFAULT_ENDPOINT = 'https://tt.agiftofflame.com';
+
+// The one and only server. TT_ENDPOINT exists for local-dev/test against a
+// throwaway server; normal use always resolves to DEFAULT_ENDPOINT.
+function endpoint() {
+    return String(process.env.TT_ENDPOINT || DEFAULT_ENDPOINT).replace(/\/$/, '');
+}
 
 function loadRemote() {
     try {
@@ -24,12 +33,16 @@ function loadRemote() {
     }
 }
 
+// Persist only token + autoPush. autoPush defaults on (this is a personal
+// always-sync tool); pass autoPush:false explicitly to opt out.
 function saveRemote(cfg) {
     fs.mkdirSync(path.dirname(REMOTE_FILE), { recursive: true });
+    const out = { token: cfg.token, autoPush: cfg.autoPush !== false };
     const tmp = REMOTE_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n');
+    fs.writeFileSync(tmp, JSON.stringify(out, null, 2) + '\n');
     fs.renameSync(tmp, REMOTE_FILE);
     fs.chmodSync(REMOTE_FILE, 0o600);
+    return out;
 }
 
 function sleep(ms) {
@@ -37,12 +50,11 @@ function sleep(ms) {
 }
 
 async function loginWithGithubDevice(opts = {}) {
-    const endpoint = String(opts.endpoint || '').replace(/\/$/, '');
-    if (!endpoint) throw new Error('need --endpoint <URL>, e.g. tt login --github --endpoint https://tt.example.com');
+    const base = endpoint();
     const log = opts.log || console.log;
     const sleeper = opts.sleep || sleep;
 
-    const start = await jsonRequest('POST', endpoint + '/api/auth/github/device/start', {});
+    const start = await jsonRequest('POST', base + '/api/auth/github/device/start', {});
     if (!start.body || !start.body.poll_token) throw new Error('server did not return a GitHub device poll token');
 
     log('GitHub device login');
@@ -57,7 +69,7 @@ async function loginWithGithubDevice(opts = {}) {
 
     while (Date.now() < expiresAt) {
         await sleeper(intervalMs);
-        const poll = await jsonRequest('POST', endpoint + '/api/auth/github/device/poll', {
+        const poll = await jsonRequest('POST', base + '/api/auth/github/device/poll', {
             poll_token: start.body.poll_token,
         }, { allowStatuses: new Set([200, 202, 403, 410, 409, 502]) });
 
@@ -68,11 +80,12 @@ async function loginWithGithubDevice(opts = {}) {
             continue;
         }
         if (poll.status === 200 && poll.body && poll.body.status === 'complete' && poll.body.token) {
-            saveRemote({ token: poll.body.token, endpoint, autoPush: !!opts.autoPush });
+            const autoPush = opts.autoPush !== false;
+            const saved = saveRemote({ token: poll.body.token, autoPush });
             log('saved remote config (remote.json)');
-            log('endpoint: ' + endpoint);
-            if (opts.autoPush) log('auto-push: on');
-            return { token: poll.body.token, endpoint, autoPush: !!opts.autoPush };
+            log('endpoint: ' + base);
+            log('auto-push: ' + (saved.autoPush ? 'on' : 'off'));
+            return { token: saved.token, endpoint: base, autoPush: saved.autoPush };
         }
         const msg = poll.body && poll.body.error ? poll.body.error : 'GitHub device login failed';
         throw new Error(msg);
@@ -91,7 +104,7 @@ async function loginWithGithubDevice(opts = {}) {
 //     safe either way — the server dedups by (user_id, record id).
 async function push(opts = {}) {
     const remote = loadRemote();
-    if (!remote) throw new Error('no remote configured — run: tt login <token> --endpoint <URL>');
+    if (!remote) throw new Error('not signed in — run: tt login');
 
     const state = store.loadState();
     state.remote = state.remote || {};
@@ -106,11 +119,12 @@ async function push(opts = {}) {
         newOffsets = unpushed.counts;
     }
 
+    const base = endpoint();
     if (!records.length) {
-        return { added: 0, duplicate: 0, invalid: 0, pushed: 0, endpoint: remote.endpoint };
+        return { added: 0, duplicate: 0, invalid: 0, pushed: 0, endpoint: base };
     }
 
-    const url = remote.endpoint.replace(/\/$/, '') + '/api/ingest';
+    const url = base + '/api/ingest';
     const body = JSON.stringify(records);
     const result = await request(url, body, remote.token);
 
@@ -120,7 +134,7 @@ async function push(opts = {}) {
     if (newOffsets) state.remote.offsets = newOffsets;
     store.saveState(state);
 
-    return { ...result, pushed: records.length, endpoint: remote.endpoint };
+    return { ...result, pushed: records.length, endpoint: base };
 }
 
 // HTTP/HTTPS request — uses global fetch when available (Node 18+), falls back
@@ -225,10 +239,10 @@ function remoteStatus() {
     const state = store.loadState();
     return {
         configured: !!remote,
-        endpoint: remote ? remote.endpoint : null,
+        endpoint: remote ? endpoint() : null,
         autoPush: remote ? !!remote.autoPush : false,
         pushedAt: state.remote ? state.remote.pushedAt : null,
     };
 }
 
-module.exports = { REMOTE_FILE, loadRemote, saveRemote, push, remoteStatus, loginWithGithubDevice };
+module.exports = { REMOTE_FILE, DEFAULT_ENDPOINT, endpoint, loadRemote, saveRemote, push, remoteStatus, loginWithGithubDevice };

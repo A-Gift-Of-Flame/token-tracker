@@ -55,7 +55,8 @@ function dropFresh() {
 test('autoPush on + fresh records: sync pushes to the VPS', async () => {
     const api = await serveIngest();
     try {
-        remote.saveRemote({ token: 't', endpoint: api.base, autoPush: true });
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 't', autoPush: true });
         dropFresh();
         const res = await sync({ offline: true });
         assert.ok(res.total > 0, 'ingested fresh records');
@@ -63,6 +64,7 @@ test('autoPush on + fresh records: sync pushes to the VPS', async () => {
         assert.ok(res.push.pushed > 0, 'records pushed');
         assert.equal(api.requests.length, 1, 'one ingest request hit the server');
     } finally {
+        delete process.env.TT_ENDPOINT;
         await api.close();
     }
 });
@@ -70,12 +72,14 @@ test('autoPush on + fresh records: sync pushes to the VPS', async () => {
 test('autoPush on but no fresh records: no push', async () => {
     const api = await serveIngest();
     try {
-        remote.saveRemote({ token: 't', endpoint: api.base, autoPush: true });
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 't', autoPush: true });
         const res = await sync({ offline: true }); // nothing dropped
         assert.equal(res.total, 0, 'no fresh records');
         assert.equal(res.push, undefined, 'push not attempted on empty ingest');
         assert.equal(api.requests.length, 0, 'server received nothing');
     } finally {
+        delete process.env.TT_ENDPOINT;
         await api.close();
     }
 });
@@ -83,13 +87,15 @@ test('autoPush on but no fresh records: no push', async () => {
 test('push:false suppresses push even with autoPush on and fresh records', async () => {
     const api = await serveIngest();
     try {
-        remote.saveRemote({ token: 't', endpoint: api.base, autoPush: true });
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 't', autoPush: true });
         dropFresh();
         const res = await sync({ offline: true, push: false });
         assert.ok(res.total > 0, 'ingested fresh records');
         assert.equal(res.push, undefined, 'push suppressed');
         assert.equal(api.requests.length, 0, 'server received nothing');
     } finally {
+        delete process.env.TT_ENDPOINT;
         await api.close();
     }
 });
@@ -97,13 +103,15 @@ test('push:false suppresses push even with autoPush on and fresh records', async
 test('autoPush off: fresh records do not push', async () => {
     const api = await serveIngest();
     try {
-        remote.saveRemote({ token: 't', endpoint: api.base, autoPush: false });
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 't', autoPush: false });
         dropFresh();
         const res = await sync({ offline: true });
         assert.ok(res.total > 0, 'ingested fresh records');
         assert.equal(res.push, undefined, 'no push when autoPush off');
         assert.equal(api.requests.length, 0, 'server received nothing');
     } finally {
+        delete process.env.TT_ENDPOINT;
         await api.close();
     }
 });

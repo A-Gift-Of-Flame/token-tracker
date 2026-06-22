@@ -6,15 +6,16 @@ input/output/cache tokens, model pricing, cost trends, budgets, subscription
 subsidy, project grouping, and a localhost dashboard.
 
 token-tracker is local-first and zero-dependency. It reads each agent's own
-local logs, stores normalized records as plain JSONL under `~/.token-tracker/`,
-and sends no usage data anywhere unless you explicitly configure and run
-`tt push`.
+local logs and stores normalized records as plain JSONL under
+`~/.token-tracker/`. Once you sign in, it auto-pushes those records to the
+hosted server at **tt.agiftofflame.com** so your usage is aggregated in one
+place across every machine.
 
 ## Install
 
-One line. Puts `tt` on your PATH, optionally signs you in to your server, and
+One line. Puts `tt` on your PATH, signs you in (GitHub device flow), and
 installs an always-on background service so usage syncs forever — no follow-up
-commands, survives reboots and crashes.
+commands, nothing to configure, survives reboots and crashes.
 
 ```bash
 # Linux / macOS
@@ -26,9 +27,8 @@ curl -fsSL https://raw.githubusercontent.com/A-Gift-Of-Flame/token-tracker/maste
 irm https://raw.githubusercontent.com/A-Gift-Of-Flame/token-tracker/master/install.ps1 | iex
 ```
 
-The installer prompts for your server URL (skip the prompt with
-`TT_ENDPOINT=https://your-server`); leave it blank to install local-only. It is
-idempotent — re-running just updates and re-checks each step.
+The server is baked in — there is no URL to enter. The installer is idempotent;
+re-running just updates and re-checks each step.
 
 Prefer npm, or only want the CLI without the background service:
 
@@ -115,23 +115,25 @@ tt reprice --dry-run
 Stored cost is always metered API-equivalent token cost. Subscription subsidy,
 budget progress, forecasts, and cache-efficiency metrics are derived views.
 
-## Optional Remote Push
+## Cloud Sync
 
-Remote push is opt-in. The public CLI does not include the hosted server code and
-does not ship a baked-in endpoint. The installer wires up login + the always-on
-service for you; the commands below are the manual path.
+The server is hardcoded to **tt.agiftofflame.com**; there is no endpoint to
+configure. Sign in once and auto-push is on by default — every `tt sync` (and
+the always-on service) pushes new records up automatically. The installer wires
+this up for you; the commands below are the manual path.
 
 ```bash
-tt login <device-token> --endpoint https://your-token-tracker.example
-tt login --github --endpoint https://your-token-tracker.example
-tt push
-tt remote status
+tt login                 # GitHub device flow; saves the minted device token
+tt login <device-token>  # or paste a token directly (same effect)
+tt push                  # push new local records now
+tt remote status         # sign-in state + last-push time
+tt remote auto-push off  # opt out of automatic push (re-enable with: on)
 ```
 
-`tt push` uploads local ledger records to `/api/ingest` on the endpoint you
-configured. Pushes are explicit and idempotent; the server dedupes by record id.
-`tt login --github` uses GitHub's device flow through your configured server and
-saves the minted device token locally, same as the token login path.
+`tt push` uploads local ledger records to `/api/ingest`. Pushes are idempotent —
+the server dedupes by record id, so re-pushing never double-counts. Pass
+`--no-auto-push` at login if you want to push only manually. Dev-only: set
+`TT_ENDPOINT` to point the CLI at a throwaway server instead of production.
 
 ## Always-On Background Sync
 
@@ -184,9 +186,10 @@ Default local files:
 ~/.token-tracker/presence.json
 ```
 
-The only default network request is the public LiteLLM pricing table fetch.
-Usage data leaves the machine only when you configure a remote and run
-`tt push`.
+Records stay on the machine until you sign in; after that, auto-push uploads
+them to tt.agiftofflame.com on each sync (turn it off with
+`tt remote auto-push off`). The other network request is the public LiteLLM
+pricing table fetch.
 
 ## Development
 

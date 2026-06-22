@@ -1,8 +1,9 @@
 'use strict';
 
-// Public-client remote push tests. These intentionally do not import the
-// hosted server implementation; a tiny local HTTP handler verifies the wire
-// behavior the CLI client owns.
+// Remote push tests. The endpoint is baked into src/remote.js; tests point at
+// a throwaway local server via the TT_ENDPOINT dev override. These intentionally
+// do not import the hosted server implementation; a tiny local HTTP handler
+// verifies the wire behavior the CLI client owns.
 
 const os = require('os');
 const path = require('path');
@@ -108,10 +109,11 @@ test('saveRemote / loadRemote round-trip; file mode is 0600', () => {
     const { dir, remote } = makeEnv();
     try {
         assert.equal(remote.loadRemote(), null, 'no config yet');
-        remote.saveRemote({ token: 'abc', endpoint: 'https://tt.example.com' });
+        remote.saveRemote({ token: 'abc' });
         const loaded = remote.loadRemote();
         assert.equal(loaded.token, 'abc');
-        assert.equal(loaded.endpoint, 'https://tt.example.com');
+        assert.equal(loaded.autoPush, true, 'auto-push defaults on');
+        assert.equal(loaded.endpoint, undefined, 'endpoint is not stored per-config');
 
         const stat = fs.statSync(remote.REMOTE_FILE);
         const mode = stat.mode & 0o777;
@@ -135,8 +137,9 @@ test('remoteStatus: not configured', () => {
 
 test('remoteStatus: configured + pushedAt from state', () => {
     const { dir, remote, store } = makeEnv();
+    process.env.TT_ENDPOINT = 'https://x.com';
     try {
-        remote.saveRemote({ token: 't', endpoint: 'https://x.com' });
+        remote.saveRemote({ token: 't' });
         const state = store.loadState();
         state.remote = { pushedAt: '2026-06-15T00:00:00.000Z' };
         store.saveState(state);
@@ -146,6 +149,7 @@ test('remoteStatus: configured + pushedAt from state', () => {
         assert.equal(s.endpoint, 'https://x.com');
         assert.equal(s.pushedAt, '2026-06-15T00:00:00.000Z');
     } finally {
+        delete process.env.TT_ENDPOINT;
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });
@@ -154,7 +158,8 @@ test('push sends records and updates pushedAt', async () => {
     const { dir, remote, store } = makeEnv();
     const api = await serveIngest();
     try {
-        remote.saveRemote({ token: 'test-token', endpoint: api.base });
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 'test-token' });
         store.append([
             { id: 'r1', ts: '2026-06-14T01:00:00Z', agent: 'claude-code', model: 'm', input: 100, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0.001, priced: true },
             { id: 'r2', ts: '2026-06-14T02:00:00Z', agent: 'claude-code', model: 'm', input: 200, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.002, priced: true },
@@ -168,6 +173,7 @@ test('push sends records and updates pushedAt', async () => {
         assert.equal(api.requests.length, 1);
         assert.ok(store.loadState().remote.pushedAt, 'pushedAt written to state');
     } finally {
+        delete process.env.TT_ENDPOINT;
         await api.close();
         fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -177,7 +183,8 @@ test('re-push is idempotent: same records counted as duplicate', async () => {
     const { dir, remote, store } = makeEnv();
     const api = await serveIngest();
     try {
-        remote.saveRemote({ token: 'test-token', endpoint: api.base });
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 'test-token' });
         store.append([
             { id: 'idem1', ts: '2026-06-14T01:00:00Z', agent: 'a', model: 'm', input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, priced: false },
         ]);
@@ -190,6 +197,7 @@ test('re-push is idempotent: same records counted as duplicate', async () => {
         assert.equal(second.duplicate, 1);
         assert.equal(api.ids.size, 1);
     } finally {
+        delete process.env.TT_ENDPOINT;
         await api.close();
         fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -199,7 +207,8 @@ test('push with --since filters to newer records only', async () => {
     const { dir, remote, store } = makeEnv();
     const api = await serveIngest();
     try {
-        remote.saveRemote({ token: 'test-token', endpoint: api.base });
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 'test-token' });
         store.append([
             { id: 'old1', ts: '2026-06-10T00:00:00Z', agent: 'a', model: 'm', input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, priced: false },
             { id: 'new1', ts: '2026-06-15T00:00:00Z', agent: 'a', model: 'm', input: 2, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, priced: false },
@@ -210,6 +219,7 @@ test('push with --since filters to newer records only', async () => {
         assert.equal(result.added, 1);
         assert.deepEqual(api.requests[0].map((r) => r.id), ['new1']);
     } finally {
+        delete process.env.TT_ENDPOINT;
         await api.close();
         fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -219,7 +229,8 @@ test('auto-push catches a late-flushed record with a past ts (insertion-order ma
     const { dir, remote, store } = makeEnv();
     const api = await serveIngest();
     try {
-        remote.saveRemote({ token: 'test-token', endpoint: api.base });
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 'test-token' });
         // First push: a recent claude-code record advances the mark.
         store.append([
             { id: 'cc1', ts: '2026-06-14T12:00:00Z', agent: 'claude-code', model: 'm', input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, priced: false },
@@ -242,6 +253,7 @@ test('auto-push catches a late-flushed record with a past ts (insertion-order ma
         const third = await remote.push();
         assert.equal(third.pushed, 0);
     } finally {
+        delete process.env.TT_ENDPOINT;
         await api.close();
         fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -251,12 +263,14 @@ test('push with nothing new returns zero counts without request', async () => {
     const { dir, remote } = makeEnv();
     const api = await serveIngest();
     try {
-        remote.saveRemote({ token: 'test-token', endpoint: api.base });
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 'test-token' });
         const result = await remote.push();
         assert.equal(result.pushed, 0);
         assert.equal(result.added, 0);
         assert.equal(api.requests.length, 0);
     } finally {
+        delete process.env.TT_ENDPOINT;
         await api.close();
         fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -299,9 +313,10 @@ test('loginWithGithubDevice polls server and saves minted device token', async (
         },
     ]);
     const logs = [];
+    // Trailing slash exercises the endpoint() strip; hostname stays tt.example.test.
+    process.env.TT_ENDPOINT = 'http://tt.example.test/';
     try {
         const result = await remote.loginWithGithubDevice({
-            endpoint: 'http://tt.example.test/',
             autoPush: true,
             pollMs: 0,
             sleep: async () => {},
@@ -312,11 +327,12 @@ test('loginWithGithubDevice polls server and saves minted device token', async (
 
         const saved = remote.loadRemote();
         assert.equal(saved.token, '42.' + 'a'.repeat(64));
-        assert.equal(saved.endpoint, 'http://tt.example.test');
+        assert.equal(saved.endpoint, undefined, 'endpoint is not stored per-config');
         assert.equal(saved.autoPush, true);
         assert.equal(mock.calls.filter((c) => c.options.path === '/api/auth/github/device/poll').length, 2);
         assert.ok(logs.some((l) => l.includes('ABCD-1234')));
     } finally {
+        delete process.env.TT_ENDPOINT;
         mock.restore();
         fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -337,10 +353,10 @@ test('loginWithGithubDevice denied response does not save remote config', async 
         },
         { status: 403, body: { status: 'denied', error: 'GitHub device flow denied' } },
     ]);
+    process.env.TT_ENDPOINT = 'http://tt.example.test';
     try {
         await assert.rejects(
             remote.loginWithGithubDevice({
-                endpoint: 'http://tt.example.test',
                 pollMs: 0,
                 sleep: async () => {},
                 log: () => {},
@@ -349,6 +365,7 @@ test('loginWithGithubDevice denied response does not save remote config', async 
         );
         assert.equal(remote.loadRemote(), null);
     } finally {
+        delete process.env.TT_ENDPOINT;
         mock.restore();
         fs.rmSync(dir, { recursive: true, force: true });
     }

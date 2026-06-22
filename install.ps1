@@ -1,15 +1,15 @@
 # token-tracker installer (Windows).
 #
-#   irm https://raw.githubusercontent.com/A-Gift-Of-Flame/token-tracker/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/A-Gift-Of-Flame/token-tracker/master/install.ps1 | iex
 #   # or, from a clone:  ./install.ps1
 #
-# End to end, no follow-up commands:
+# End to end, nothing to configure — the server is baked in (tt.agiftofflame.com):
 #   1. checks Node >= 22.5
 #   2. puts `tt` on your PATH (user scope)
-#   3. signs you in to your server (GitHub device flow) with auto-push on
+#   3. signs you in (GitHub device flow) with auto-push on
 #   4. installs the always-on Scheduled Task so usage syncs forever
 #
-# Re-running is safe. Optional: $env:TT_ENDPOINT to skip the prompt.
+# Re-running is safe. Dev-only: set $env:TT_ENDPOINT to use a throwaway server.
 
 $ErrorActionPreference = 'Stop'
 function Say  ($m) { Write-Host "==> $m" -ForegroundColor Cyan }
@@ -55,17 +55,15 @@ if ($userPath -notlike "*$binDir*") {
 }
 
 # --- 3. sign in (only if not already configured) ---------------------------
+# Endpoint is baked into the client; the GitHub device flow prints a URL + code
+# and polls, so no server URL is needed.
 $dataDir   = if ($env:TOKEN_TRACKER_DIR) { $env:TOKEN_TRACKER_DIR } else { Join-Path $env:USERPROFILE '.token-tracker' }
 $remoteJson = Join-Path $dataDir 'remote.json'
 if (Test-Path $remoteJson) {
   Say "Already signed in ($remoteJson) - leaving auth as is."
 } else {
-  $endpoint = $env:TT_ENDPOINT
-  if (-not $endpoint) { $endpoint = Read-Host 'Server URL (e.g. https://tt.example.com)' }
-  if ($endpoint) {
-    Say "Signing in to $endpoint (GitHub device flow, auto-push on)"
-    & cmd /c "`"$tt`" login --github --endpoint $endpoint --auto-push"
-  }
+  Say "Signing in (GitHub device flow, auto-push on)"
+  & cmd /c "`"$tt`" login"
 }
 
 # --- 4. boot service -------------------------------------------------------
@@ -76,4 +74,4 @@ if ($env:TT_PRESENCE -eq '1') {
   & cmd /c "`"$tt`" service install"
 }
 
-Say "Done. Usage now syncs automatically, forever. Nothing else to run."
+Say "Done. Usage now syncs to tt.agiftofflame.com automatically, forever. Nothing else to run."

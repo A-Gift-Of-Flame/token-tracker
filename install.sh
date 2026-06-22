@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 # token-tracker installer (Linux + macOS).
 #
-#   curl -fsSL https://raw.githubusercontent.com/A-Gift-Of-Flame/token-tracker/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/A-Gift-Of-Flame/token-tracker/master/install.sh | bash
 #   # or, from a clone:  ./install.sh
 #
-# Does everything end to end so there are no follow-up commands:
+# End to end, no follow-up commands and nothing to configure — the server is
+# baked in (tt.agiftofflame.com):
 #   1. checks Node >= 22.5
 #   2. puts the `tt` binary on your PATH
-#   3. signs you in to your server (GitHub device flow) with auto-push on
+#   3. signs you in (GitHub device flow) with auto-push on
 #   4. installs the always-on boot service (systemd / launchd) so usage syncs
 #      forever, across reboots and crashes
 #
 # Re-running is safe: each step is skipped if already done.
-#
-# Config (optional): set TT_ENDPOINT to skip the prompt, e.g.
-#   TT_ENDPOINT=https://tt.example.com ./install.sh
+# Dev-only: set TT_ENDPOINT to point at a throwaway server instead of prod.
 
 set -euo pipefail
 
@@ -62,24 +61,14 @@ case ":$PATH:" in
 esac
 
 # --- 3. sign in (only if not already configured) ---------------------------
+# The endpoint is baked into the client; the GitHub device flow prints a URL +
+# code and polls, so it works even when piped from curl (no stdin needed).
 REMOTE_JSON="${TOKEN_TRACKER_DIR:-$HOME/.token-tracker}/remote.json"
 if [ -f "$REMOTE_JSON" ]; then
   say "Already signed in ($REMOTE_JSON) — leaving auth as is."
 else
-  ENDPOINT="${TT_ENDPOINT:-}"
-  if [ -z "$ENDPOINT" ]; then
-    if [ -t 0 ]; then
-      printf 'Server URL (e.g. https://tt.example.com): '
-      read -r ENDPOINT
-    else
-      warn "No TT_ENDPOINT set and not interactive — skipping sign-in."
-      warn "Later run:  tt login --github --endpoint https://YOUR_SERVER --auto-push"
-    fi
-  fi
-  if [ -n "$ENDPOINT" ]; then
-    say "Signing in to $ENDPOINT (GitHub device flow, auto-push on)"
-    "$TT" login --github --endpoint "$ENDPOINT" --auto-push
-  fi
+  say "Signing in (GitHub device flow, auto-push on)"
+  "$TT" login
 fi
 
 # --- 4. boot service -------------------------------------------------------
@@ -101,4 +90,4 @@ else
   "$TT" service install
 fi
 
-say "Done. Usage now syncs automatically, forever. Nothing else to run."
+say "Done. Usage now syncs to tt.agiftofflame.com automatically, forever. Nothing else to run."

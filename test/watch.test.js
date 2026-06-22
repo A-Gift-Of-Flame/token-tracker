@@ -50,14 +50,16 @@ function dropFresh() {
 test('watchTick syncs and pushes fresh records, logs the push', async () => {
     const api = await serveIngest();
     const logs = [];
+    process.env.TT_ENDPOINT = api.base;
     try {
-        remote.saveRemote({ token: 't', endpoint: api.base, autoPush: true });
+        remote.saveRemote({ token: 't', autoPush: true });
         dropFresh();
         const res = await watchTick({ offline: true, log: (m) => logs.push(m), errlog: (m) => logs.push('ERR ' + m) });
         assert.ok(res && res.push && res.push.pushed > 0, 'pushed');
         assert.equal(api.requests.length, 1, 'server got the records');
         assert.ok(logs.some((l) => l.includes('pushed')), 'logged a push line');
     } finally {
+        delete process.env.TT_ENDPOINT;
         await api.close();
     }
 });
@@ -65,10 +67,15 @@ test('watchTick syncs and pushes fresh records, logs the push', async () => {
 test('watchTick never throws when push endpoint is down; reports pushError', async () => {
     const logs = [];
     // Point at a closed port so the push fails.
-    remote.saveRemote({ token: 't', endpoint: 'http://127.0.0.1:1', autoPush: true });
-    dropFresh();
-    const res = await watchTick({ offline: true, log: (m) => logs.push(m), errlog: (m) => logs.push('ERR ' + m) });
-    assert.ok(res, 'tick returned (did not throw)');
-    assert.ok(res.pushError, 'pushError surfaced');
-    assert.ok(logs.some((l) => l.startsWith('ERR') && l.includes('auto-push failed')), 'logged the failure');
+    process.env.TT_ENDPOINT = 'http://127.0.0.1:1';
+    try {
+        remote.saveRemote({ token: 't', autoPush: true });
+        dropFresh();
+        const res = await watchTick({ offline: true, log: (m) => logs.push(m), errlog: (m) => logs.push('ERR ' + m) });
+        assert.ok(res, 'tick returned (did not throw)');
+        assert.ok(res.pushError, 'pushError surfaced');
+        assert.ok(logs.some((l) => l.startsWith('ERR') && l.includes('auto-push failed')), 'logged the failure');
+    } finally {
+        delete process.env.TT_ENDPOINT;
+    }
 });

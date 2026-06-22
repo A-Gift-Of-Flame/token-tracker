@@ -54,8 +54,8 @@ Discord presence (opt-in):
   tt presence uninstall        remove token-tracker Claude Code presence hooks
 
 Data:
-  tt sync [--push|--no-push]   collect new usage from all agents; optionally push
-                               (auto-push uses remote.json opt-in)
+  tt sync [--push|--no-push]   collect new usage from all agents; pushes when
+                               signed in (auto-push on; --no-push to suppress)
   tt watch [--interval S]      always-on: sync+push every S seconds (default 60),
                                no dashboard (foreground; Ctrl-C to stop).
   tt service install           install + start the always-on watcher as a boot
@@ -86,15 +86,13 @@ Data:
             [--set-daily USD]  daily cost ceiling
             [--clear-daily]    ceilings warn on tt sync + reports when crossed
 
-Remote push (cloud tier — opt-in):
-  tt login <token> --endpoint URL [--auto-push]
-                                  save device token + server URL to remote.json (0600)
-  tt login --github --endpoint URL [--auto-push]
-                                  sign in with GitHub device flow, then save
-                                  the minted server device token
-  tt push [--since ISO]            push new local records to the remote (idempotent)
-  tt remote status                 show remote config + last-push timestamp
-  tt remote auto-push on|off       push automatically after tt sync
+Cloud sync (tt.agiftofflame.com — auto-push on after login):
+  tt login [--no-auto-push]        sign in with GitHub device flow, save the
+                                   minted device token to remote.json (0600)
+  tt login <token>                 save a device token directly (same effect)
+  tt push [--since ISO]            push new local records to the server (idempotent)
+  tt remote status                 show sign-in state + last-push timestamp
+  tt remote auto-push on|off       toggle auto-push after tt sync
 
 Sources: Claude Code, Codex CLI, OpenCode (automatic). Anything else via
 "tt log" or JSONL files dropped in ${ROOT}/inbox/.
@@ -510,36 +508,20 @@ async function main() {
         }
 
         case 'login': {
-            if (args.flags.github) {
-                const { loadRemote, loginWithGithubDevice } = require('../src/remote');
-                const existing = loadRemote();
-                const endpoint = args.flags.endpoint || (existing && existing.endpoint);
-                if (!endpoint) {
-                    console.error('need --endpoint <URL>, e.g. tt login --github --endpoint https://tt.example.com');
-                    process.exit(1);
-                }
-                await loginWithGithubDevice({
-                    endpoint,
-                    autoPush: !!args.flags['auto-push'],
-                    log: (m) => console.log(m),
-                });
+            // Endpoint is baked in (src/remote.js). Auto-push defaults on; pass
+            // --no-auto-push to opt out. `tt login <token>` saves a token
+            // directly; bare `tt login` runs the GitHub device flow.
+            const { saveRemote, loginWithGithubDevice, endpoint } = require('../src/remote');
+            const autoPush = !args.flags['no-auto-push'];
+            const token = args._[1];
+            if (token && !args.flags.github) {
+                saveRemote({ token, autoPush });
+                console.log('saved remote config (remote.json)');
+                console.log('endpoint: ' + endpoint());
+                console.log('auto-push: ' + (autoPush ? 'on' : 'off'));
                 return;
             }
-            const token = args._[1];
-            if (!token) {
-                console.error('usage: tt login <token> --endpoint <URL>  OR  tt login --github --endpoint <URL>');
-                process.exit(1);
-            }
-            const endpoint = args.flags.endpoint;
-            if (!endpoint) {
-                console.error('need --endpoint <URL>, e.g. tt login <token> --endpoint https://tt.example.com');
-                process.exit(1);
-            }
-            const { saveRemote } = require('../src/remote');
-            saveRemote({ token, endpoint: String(endpoint).replace(/\/$/, ''), autoPush: !!args.flags['auto-push'] });
-            console.log('saved remote config (remote.json)');
-            console.log('endpoint: ' + endpoint);
-            if (args.flags['auto-push']) console.log('auto-push: on');
+            await loginWithGithubDevice({ autoPush, log: (m) => console.log(m) });
             return;
         }
 
@@ -556,7 +538,7 @@ async function main() {
                 const { remoteStatus } = require('../src/remote');
                 const s = remoteStatus();
                 if (!s.configured) {
-                    console.log('remote: not configured — run tt login <token> --endpoint <URL>');
+                    console.log('remote: not signed in — run tt login');
                 } else {
                     console.log('endpoint: ' + s.endpoint);
                     console.log('auto-push: ' + (s.autoPush ? 'on' : 'off'));
@@ -571,7 +553,7 @@ async function main() {
                 const { loadRemote, saveRemote } = require('../src/remote');
                 const cfg = loadRemote();
                 if (!cfg) {
-                    console.error('no remote configured — run tt login <token> --endpoint <URL>');
+                    console.error('not signed in — run tt login');
                     process.exit(1);
                 }
                 saveRemote({ ...cfg, autoPush: value === 'on' });
