@@ -21,7 +21,8 @@ function makeEnv() {
     const dir = makeTempDir();
     process.env.TOKEN_TRACKER_DIR = dir;
     for (const key of Object.keys(require.cache)) {
-        if (key.includes('/src/paths') || key.includes('/src/remote') || key.includes('/src/store')) {
+        const k = key.replace(/\\/g, '/'); // require.cache keys use backslashes on Windows
+        if (k.includes('/src/paths') || k.includes('/src/remote') || k.includes('/src/store')) {
             delete require.cache[key];
         }
     }
@@ -115,9 +116,11 @@ test('saveRemote / loadRemote round-trip; file mode is 0600', () => {
         assert.equal(loaded.autoPush, true, 'auto-push defaults on');
         assert.equal(loaded.endpoint, undefined, 'endpoint is not stored per-config');
 
-        const stat = fs.statSync(remote.REMOTE_FILE);
-        const mode = stat.mode & 0o777;
-        assert.equal(mode, 0o600, 'remote.json must be 0600');
+        if (process.platform !== 'win32') { // chmod is a no-op on Windows
+            const stat = fs.statSync(remote.REMOTE_FILE);
+            const mode = stat.mode & 0o777;
+            assert.equal(mode, 0o600, 'remote.json must be 0600');
+        }
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -26,11 +26,12 @@ test('saveBudget patches one ceiling without clobbering the other', () => {
     assert.equal(budget.saveBudget({ monthly: -5 }).monthly, null, 'non-positive clears');
 });
 
-test('thresholdWarnings fires per crossed ceiling', () => {
+test('thresholdWarnings fires per crossed ceiling', (t) => {
+    // Pin the clock mid-month: on the 1st of a real month the "earlier" record
+    // would share today's date and inflate the daily total (30 → 110).
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-06-15T12:00:00Z').getTime() });
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1, 12, 0, 0);
-    // Guard: if today is the 1st the two records share a day — push the earlier
-    // one to the 1st regardless; today is mid-month in practice.
     const key = now.toISOString().slice(0, 7);
     fs.writeFileSync(path.join(dataDir, key + '.jsonl'), [
         { id: 'today', ts: now.toISOString(), agent: 'x', model: 'm', input: 0, output: 0, cost: 30 },

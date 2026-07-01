@@ -21,7 +21,12 @@ fs.writeFileSync(path.join(dataDir, '2026-06.jsonl'), [
     { id: 'b', ts: '2026-06-01T00:00:00Z', agent: 'codex', model: 'gpt-5.5', provider: 'openai', input: 200, output: 0, cacheRead: 0, cacheWrite: 0, cost: 1, priced: true },
 ].map((r) => JSON.stringify(r)).join('\n') + '\n');
 
-test('records export: headers, oldest-first, project-less → blank, cost rounded', () => {
+// The seeded records are hardcoded to June 2026; pin the clock inside that
+// month so the 'month' period always covers them (mock resets per test).
+const FIXED_NOW = new Date('2026-06-15T12:00:00Z').getTime();
+
+test('records export: headers, oldest-first, project-less → blank, cost rounded', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: FIXED_NOW });
     const data = exp.records('month');
     assert.deepEqual(data.headers, ['ts', 'agent', 'model', 'provider', 'project', 'input', 'output', 'cacheRead', 'cacheWrite', 'cost', 'priced', 'id']);
     assert.equal(data.rows.length, 2);
@@ -31,7 +36,8 @@ test('records export: headers, oldest-first, project-less → blank, cost rounde
     assert.equal(data.rows[1][9], 0.048336, 'cost rounded to 6 decimals');
 });
 
-test('aggregate export: grouped rows + TOTAL', () => {
+test('aggregate export: grouped rows + TOTAL', (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: FIXED_NOW });
     const data = exp.aggregate('month', 'agent');
     assert.deepEqual(data.headers, ['agent', 'requests', 'input', 'output', 'cacheRead', 'cacheWrite', 'cost']);
     const total = data.rows[data.rows.length - 1];

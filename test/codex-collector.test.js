@@ -34,11 +34,14 @@ function stageRollout() {
 
 function withHome(home, fn) {
     const prev = process.env.HOME;
+    const prevProfile = process.env.USERPROFILE;
     process.env.HOME = home;
+    process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
     delete require.cache[require.resolve('../src/collectors/codex')];
     try { return fn(require('../src/collectors/codex')); }
     finally {
         if (prev === undefined) delete process.env.HOME; else process.env.HOME = prev;
+        if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
     }
 }
 

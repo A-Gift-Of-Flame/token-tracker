@@ -16,6 +16,7 @@ const http = require('node:http');
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tt-autopush-home-'));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tt-autopush-root-'));
 process.env.HOME = home;
+process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
 process.env.TOKEN_TRACKER_DIR = root;
 
 const { test } = require('node:test');

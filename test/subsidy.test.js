@@ -47,8 +47,12 @@ function writeRecords(dir, recs) {
 // Load a fresh subscriptions module bound to the staged env.
 function withEnv({ home, dir }, fn) {
     const ph = process.env.HOME;
+    const pu = process.env.USERPROFILE;
     const pd = process.env.TOKEN_TRACKER_DIR;
-    if (home !== undefined) process.env.HOME = home;
+    if (home !== undefined) {
+        process.env.HOME = home;
+        process.env.USERPROFILE = home; // os.homedir() reads USERPROFILE on Windows
+    }
     if (dir !== undefined) process.env.TOKEN_TRACKER_DIR = dir;
     for (const m of ['../src/paths', '../src/store', '../src/report', '../src/subscriptions']) {
         delete require.cache[require.resolve(m)];
@@ -56,6 +60,7 @@ function withEnv({ home, dir }, fn) {
     try { return fn(require('../src/subscriptions')); }
     finally {
         process.env.HOME = ph;
+        if (pu === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = pu;
         if (pd === undefined) delete process.env.TOKEN_TRACKER_DIR; else process.env.TOKEN_TRACKER_DIR = pd;
     }
 }
