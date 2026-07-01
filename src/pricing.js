@@ -29,6 +29,7 @@ const BUILTIN = {
     'claude-opus-4-7': { in: 5e-6, out: 25e-6 },
     'claude-opus-4-6': { in: 5e-6, out: 25e-6 },
     'claude-opus-4-5': { in: 5e-6, out: 25e-6 },
+    'claude-sonnet-5': { in: 3e-6, out: 15e-6 },
     'claude-sonnet-4-6': { in: 3e-6, out: 15e-6 },
     'claude-sonnet-4-5': { in: 3e-6, out: 15e-6 },
     'claude-haiku-4-5': { in: 1e-6, out: 5e-6 },
