@@ -120,6 +120,9 @@ test('saveRemote / loadRemote round-trip; file mode is 0600', () => {
             const stat = fs.statSync(remote.REMOTE_FILE);
             const mode = stat.mode & 0o777;
             assert.equal(mode, 0o600, 'remote.json must be 0600');
+        } else {
+            assert.equal(fs.readFileSync(remote.REMOTE_FILE, 'utf8').includes('abc'), true,
+                'Windows credential file remains readable by its owner');
         }
     } finally {
         fs.rmSync(dir, { recursive: true, force: true });

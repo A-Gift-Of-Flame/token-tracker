@@ -4,13 +4,20 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const EventEmitter = require('events');
 
-const { DiscordIPC, OP, decodeFrames, encodeFrame } = require('../src/presence/discord-ipc');
+const { DiscordIPC, OP, decodeFrames, encodeFrame, ipcCandidatePaths } = require('../src/presence/discord-ipc');
 const { PresenceEngine } = require('../src/presence/engine');
 const { renderPresenceActivity } = require('../src/presence/render');
 
 function wait(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+test('Windows Discord IPC candidates use the native named-pipe namespace', () => {
+    const candidates = ipcCandidatePaths({}, 'win32');
+    assert.equal(candidates.length, 10);
+    assert.equal(candidates[0], '\\\\?\\pipe\\discord-ipc-0');
+    assert.equal(candidates[9], '\\\\?\\pipe\\discord-ipc-9');
+});
 
 test('Discord IPC frame encode/decode uses opcode int32 LE, length int32 LE, JSON payload', () => {
     const frame = encodeFrame(OP.FRAME, { cmd: 'SET_ACTIVITY', ok: true });
