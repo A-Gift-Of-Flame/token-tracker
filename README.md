@@ -28,7 +28,15 @@ irm https://raw.githubusercontent.com/A-Gift-Of-Flame/token-tracker/master/insta
 ```
 
 The server is baked in — there is no URL to enter. The installer is idempotent;
-re-running just updates and re-checks each step.
+re-running just updates and re-checks each step. It also installs the always-on
+Discord presence service if you set `TT_PRESENCE=1` first (see
+[Discord Rich Presence](#discord-rich-presence)).
+
+> **Windows installs from before 2026-09-29:** the installer could print "Done"
+> without installing the background service (`Access is denied` without an admin
+> shell), and then usage only synced when you ran `tt` by hand. Check with
+> `tt service status`. If it says `task not installed`, re-run the installer
+> line above. No admin shell needed.
 
 Prefer npm, or only want the CLI without the background service:
 
@@ -147,8 +155,18 @@ tt service uninstall    # stop and remove it
 
 `tt service` installs a real OS supervisor — systemd user unit (Linux), launchd
 LaunchAgent (macOS), or Scheduled Task (Windows) — that runs `tt watch`
-(sync + push every 60s) with auto-restart, starting on boot. This is the
-supported way to keep the dashboard live; you never hand-write a unit file.
+(sync + push every 60s) with auto-restart, starting on boot (Linux) or login
+(macOS, Windows). This is the supported way to keep the dashboard live; you
+never hand-write a unit file.
+
+On Windows the task is scoped to your user, so it installs from a normal
+(non-admin) shell. It runs without a console window, keeps running on battery,
+and has no time limit. Only one watcher runs at a time: a newly started
+`tt watch` takes over and the older one exits on its next tick, so re-installing
+or upgrading never leaves two loops running.
+
+Large backlogs (e.g. after a machine has been offline for a while) push in
+batches of 2,000 records. If a batch fails, the next push resumes from there.
 
 For a one-off foreground run instead (Ctrl-C to stop):
 
@@ -165,7 +183,20 @@ agent-agnostic across Claude Code, Codex, Gemini, and OpenCode.
 tt presence                       # foreground; Ctrl-C clears activity
 tt presence --source claude       # pick a source: store|claude|codex|gemini|opencode
 tt presence install               # opt-in Claude Code hooks for a bounded daemon
+tt presence --all                 # every agent at once: busiest headlines, rest aggregated
 ```
+
+To keep multi-agent presence running in the background, install it as a second
+service next to the sync watcher. It starts at boot/login and keeps retrying
+until Discord is up:
+
+```bash
+tt service install --presence     # sync + presence services
+tt service uninstall --presence   # remove presence only; sync keeps running
+```
+
+With the one-line installer, set `TT_PRESENCE=1` before running it
+(`$env:TT_PRESENCE='1'` in PowerShell).
 
 Presence is truthful by design: it reflects actual live state and never
 fabricates fields — stale data shows as stale, session-end-only usage is not
