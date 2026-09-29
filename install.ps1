@@ -73,5 +73,8 @@ if ($env:TT_PRESENCE -eq '1') {
 } else {
   & cmd /c "`"$tt`" service install"
 }
+if ($LASTEXITCODE -ne 0) {
+  throw "service install failed (exit $LASTEXITCODE). Usage will NOT sync automatically; fix the error above and re-run."
+}
 
 Say "Done. Usage now syncs to tt.agiftofflame.com automatically, forever. Nothing else to run."

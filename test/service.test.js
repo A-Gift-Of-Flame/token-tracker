@@ -9,6 +9,7 @@ const {
     SERVICES,
     plistText,
     schtasksArgs,
+    schtasksXml,
     systemdUnitText,
 } = require('../src/service');
 
@@ -42,13 +43,26 @@ test('launchd plist uses the service label and arguments', () => {
     assert.doesNotMatch(presence, /--interval/);
 });
 
-test('schtasks args use the service task name and command args', () => {
-    const sync = schtasksArgs(SERVICES.sync, 15);
-    const presence = schtasksArgs(SERVICES.presence, 15);
+test('schtasks args create the named task from an XML definition', () => {
+    const sync = schtasksArgs(SERVICES.sync, 'C:\\t\\sync.xml');
+    const presence = schtasksArgs(SERVICES.presence, 'C:\\t\\p.xml');
 
     assert.equal(sync[sync.indexOf('/tn') + 1], 'token-tracker-watch');
-    assert.match(sync[sync.indexOf('/tr') + 1], /tt\.js" watch --interval 15/);
+    assert.equal(sync[sync.indexOf('/xml') + 1], 'C:\\t\\sync.xml');
     assert.equal(presence[presence.indexOf('/tn') + 1], 'token-tracker-presence');
-    assert.match(presence[presence.indexOf('/tr') + 1], /tt\.js" presence --all/);
-    assert.doesNotMatch(presence[presence.indexOf('/tr') + 1], /--interval/);
+    assert.ok(!sync.includes('/sc'), 'no any-user /sc onlogon trigger (needs admin)');
+});
+
+test('schtasks XML: user-scoped logon trigger, no time limit, runs on battery, headless', () => {
+    const sync = schtasksXml(SERVICES.sync, 15, 'GASTLY\\mauro');
+    const presence = schtasksXml(SERVICES.presence, 15, 'GASTLY\\mauro');
+
+    assert.match(sync, /<LogonTrigger><Enabled>true<\/Enabled><UserId>GASTLY\\mauro<\/UserId>/);
+    assert.match(sync, /<ExecutionTimeLimit>PT0S<\/ExecutionTimeLimit>/);
+    assert.match(sync, /<DisallowStartIfOnBatteries>false</);
+    assert.match(sync, /<StopIfGoingOnBatteries>false</);
+    assert.match(sync, /<RunLevel>LeastPrivilege<\/RunLevel>/);
+    assert.match(sync, /<Command>conhost\.exe<\/Command><Arguments>--headless &quot;.*tt\.js&quot; watch --interval 15</);
+    assert.match(presence, /tt\.js&quot; presence --all</);
+    assert.doesNotMatch(presence, /--interval/);
 });

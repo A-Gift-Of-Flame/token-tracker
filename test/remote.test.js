@@ -265,6 +265,73 @@ test('auto-push catches a late-flushed record with a past ts (insertion-order ma
     }
 });
 
+function rec(id, ts) {
+    return { id, ts, agent: 'a', model: 'm', input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, priced: false };
+}
+
+test('push splits a large backlog into batches across month files', async () => {
+    const { dir, remote, store } = makeEnv();
+    const api = await serveIngest();
+    try {
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 'test-token' });
+        store.append([
+            rec('j1', '2026-06-01T00:00:00Z'), rec('j2', '2026-06-02T00:00:00Z'), rec('j3', '2026-06-03T00:00:00Z'),
+            rec('k1', '2026-07-01T00:00:00Z'), rec('k2', '2026-07-02T00:00:00Z'),
+        ]);
+
+        const result = await remote.push({ batchSize: 2 });
+        assert.equal(result.pushed, 5);
+        assert.equal(result.added, 5);
+        assert.deepEqual(api.requests.map((r) => r.length), [2, 2, 1]);
+        assert.deepEqual(store.loadState().remote.offsets, { '2026-06': 3, '2026-07': 2 });
+
+        const again = await remote.push({ batchSize: 2 });
+        assert.equal(again.pushed, 0);
+        assert.equal(api.requests.length, 3);
+    } finally {
+        delete process.env.TT_ENDPOINT;
+        await api.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test('failed batch keeps the mark at the last good batch; next push resumes there', async () => {
+    const { dir, remote, store } = makeEnv();
+    const api = await serveIngest();
+    const realFetch = global.fetch;
+    let calls = 0;
+    // Fail the second POST once, like a transient 5xx mid-backlog.
+    global.fetch = (url, init) => {
+        calls++;
+        if (calls === 2) return Promise.resolve(new Response('boom', { status: 502 }));
+        return realFetch(url, init);
+    };
+    try {
+        process.env.TT_ENDPOINT = api.base;
+        remote.saveRemote({ token: 'test-token' });
+        store.append([
+            rec('p1', '2026-06-01T00:00:00Z'), rec('p2', '2026-06-02T00:00:00Z'),
+            rec('p3', '2026-06-03T00:00:00Z'), rec('p4', '2026-06-04T00:00:00Z'),
+            rec('p5', '2026-06-05T00:00:00Z'),
+        ]);
+
+        await assert.rejects(remote.push({ batchSize: 2 }), /push failed \(502\)/);
+        assert.deepEqual(store.loadState().remote.offsets, { '2026-06': 2 }, 'first batch recorded');
+
+        const resumed = await remote.push({ batchSize: 2 });
+        assert.equal(resumed.pushed, 3);
+        assert.equal(resumed.added, 3);
+        assert.equal(api.ids.size, 5);
+        assert.deepEqual(store.loadState().remote.offsets, { '2026-06': 5 });
+    } finally {
+        global.fetch = realFetch;
+        delete process.env.TT_ENDPOINT;
+        await api.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
 test('push with nothing new returns zero counts without request', async () => {
     const { dir, remote } = makeEnv();
     const api = await serveIngest();

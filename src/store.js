@@ -83,17 +83,25 @@ function loadRange(fromIso, toIso) {
 // records at exit, all timestamped < the mark that claude-code already advanced
 // to ~now.) Returns the unpushed records plus the new per-file counts to persist
 // on a successful push. `offsets` maps "YYYY-MM" -> count already pushed.
+// `keys[i]` is the month file records[i] came from and `starts` the clamped
+// per-file start counts, so a chunked push can advance the mark batch by batch.
 function loadUnpushed(offsets = {}) {
     const records = [];
+    const keys = [];
     const counts = {};
+    const starts = {};
     for (const file of listMonthFiles()) {
         const key = path.basename(file, '.jsonl');
         const recs = readRecords(file);
         counts[key] = recs.length;
         const start = Math.min(offsets[key] || 0, recs.length);
-        for (let i = start; i < recs.length; i++) records.push(recs[i]);
+        starts[key] = start;
+        for (let i = start; i < recs.length; i++) {
+            records.push(recs[i]);
+            keys.push(key);
+        }
     }
-    return { records, counts };
+    return { records, keys, counts, starts };
 }
 
 // Parse every record in one month file (skips blank/corrupt lines).

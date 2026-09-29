@@ -202,14 +202,59 @@ function statusLaunchd(spec) {
 
 // ---------- Windows: Scheduled Task ----------
 
-function schtasksArgs(spec, interval) {
-    const tr = '"' + NODE + '" "' + TT_JS + '" ' + argsFor(spec, interval).join(' ');
-    return ['/create', '/tn', spec.taskName, '/tr', tr, '/sc', 'onlogon', '/rl', 'limited', '/f'];
+function xmlEscape(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function windowsUser() {
+    const name = process.env.USERNAME || os.userInfo().username;
+    return process.env.USERDOMAIN ? process.env.USERDOMAIN + '\\' + name : name;
+}
+
+// Task definition as XML rather than /sc onlogon flags, because the flag form:
+//   - creates an any-user logon trigger, which needs admin ("Access is denied"
+//     from a normal shell); a trigger scoped to the current user does not;
+//   - inherits a 72h execution limit that kills the long-running loop;
+//   - refuses to start on battery and stops when unplugged (laptops);
+//   - opens a visible node console window, which closing kills the loop.
+// conhost --headless runs node with no window.
+function schtasksXml(spec, interval, user = windowsUser()) {
+    const args = '--headless "' + NODE + '" "' + TT_JS + '" ' + argsFor(spec, interval).join(' ');
+    return '<?xml version="1.0" encoding="UTF-16"?>\n'
+        + '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+        + '  <RegistrationInfo><Description>' + xmlEscape(spec.desc) + '</Description></RegistrationInfo>\n'
+        + '  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>' + xmlEscape(user) + '</UserId></LogonTrigger></Triggers>\n'
+        + '  <Principals><Principal id="Author"><UserId>' + xmlEscape(user) + '</UserId>'
+        + '<LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>\n'
+        + '  <Settings>\n'
+        + '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n'
+        + '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n'
+        + '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n'
+        + '    <StartWhenAvailable>true</StartWhenAvailable>\n'
+        + '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\n'
+        // Presence exits non-zero when Discord is not up yet; restart retries it.
+        + '    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>\n'
+        + '  </Settings>\n'
+        + '  <Actions Context="Author"><Exec><Command>conhost.exe</Command>'
+        + '<Arguments>' + xmlEscape(args) + '</Arguments></Exec></Actions>\n'
+        + '</Task>\n';
+}
+
+function schtasksArgs(spec, xmlFile) {
+    return ['/create', '/tn', spec.taskName, '/xml', xmlFile, '/f'];
 }
 
 function installSchtasks(spec, interval) {
-    // ONLOGON task that runs the watch loop. /f overwrites on re-install.
-    const r = tryRun('schtasks', schtasksArgs(spec, interval));
+    // Logon task that runs the watch loop. /f overwrites on re-install.
+    const xmlFile = path.join(os.tmpdir(), 'tt-' + spec.taskName + '-' + process.pid + '.xml');
+    // schtasks reads task XML as UTF-16LE (BOM + declared encoding).
+    fs.writeFileSync(xmlFile, '﻿' + schtasksXml(spec, interval), 'utf16le');
+    let r;
+    try {
+        r = tryRun('schtasks', schtasksArgs(spec, xmlFile));
+    } finally {
+        try { fs.unlinkSync(xmlFile); } catch {}
+    }
     if (!r.ok) return { ok: false, message: 'schtasks create failed: ' + r.out.trim() };
     tryRun('schtasks', ['/run', '/tn', spec.taskName]);
     return { ok: true, message: 'installed scheduled task "' + spec.taskName + '" — running now, starts on logon.' };
@@ -285,6 +330,7 @@ module.exports = {
     install,
     plistText,
     schtasksArgs,
+    schtasksXml,
     status,
     systemdUnitText,
     uninstall,

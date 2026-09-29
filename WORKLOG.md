@@ -6,6 +6,30 @@ Use this file for dated session notes, verification summaries, and references to
 evidence artifacts. Server-side history lives in the private `token-tracker-server`
 repo. Full per-commit detail is in `git log`.
 
+## 2026-09-29 — Windows always-on sync fixed (BL-157)
+
+On a Windows laptop, usage had stopped syncing and pushing since 2026-07-12. There
+were two independent causes:
+- `tt service install` failed with `schtasks create failed: ERROR: Access is denied.`:
+  `/sc onlogon` creates an any-user logon trigger, which needs an elevated shell.
+  `install.ps1` did not check the exit code, so it still printed "Done".
+- Push sent the whole backlog in one POST. Once more than 10,000 records were
+  waiting, the hosted ingest cap answered 413 on every retry, so auto-push could
+  never recover.
+
+Fix: the Windows task is now created from XML (`schtasks /create /xml`) with a
+logon trigger scoped to the current user (no admin), `ExecutionTimeLimit PT0S`
+(the old default of 72h killed the loop), runs on battery, restarts on failure, and
+runs under `conhost.exe --headless` (no console window to close by accident). Push
+now goes out in batches of 2,000 and advances the insertion-order mark after each
+successful batch, so a failure resumes from the last good batch. `install.ps1` now
+throws when service install fails.
+
+Verified on the affected machine: a non-elevated `tt service install` → task
+`Running`, node `watch --interval 60` running headless; the 16,419-record backlog
+pushed (`added 16419, duplicate 0`); the background task then pushed new records on
+its own (`pushedAt` 17:14:06Z, offsets advanced). `node --test` 108/108.
+
 ## 2026-06-20 — Client state docs established (split from private server repo)
 
 Stood up a bespoke client-only StateDD instance in this public repo: AGENTS.md,

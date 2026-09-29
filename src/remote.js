@@ -102,6 +102,10 @@ async function loginWithGithubDevice(opts = {}) {
 //     records.
 //   `tt push --since ISO|all`: explicit ts-range backfill, unchanged. Re-push is
 //     safe either way — the server dedups by (user_id, record id).
+// Records go out in batches of PUSH_BATCH: the server rejects oversized batches
+// (413), so a single POST of a large backlog would fail forever.
+const PUSH_BATCH = 2000;
+
 async function push(opts = {}) {
     const remote = loadRemote();
     if (!remote) throw new Error('not signed in — run: tt login');
@@ -109,14 +113,16 @@ async function push(opts = {}) {
     const state = store.loadState();
     state.remote = state.remote || {};
 
-    let records, newOffsets = null;
+    let records, keys = null, offsets = null, finalOffsets = null;
     if (opts.since != null) {
         const since = opts.since === 'all' ? null : opts.since;
         records = store.loadRange(since, null).sort((a, b) => (a.ts < b.ts ? -1 : 1));
     } else {
         const unpushed = store.loadUnpushed(state.remote.offsets || {});
         records = unpushed.records;
-        newOffsets = unpushed.counts;
+        keys = unpushed.keys;
+        offsets = { ...(state.remote.offsets || {}), ...unpushed.starts };
+        finalOffsets = unpushed.counts;
     }
 
     const base = endpoint();
@@ -125,16 +131,24 @@ async function push(opts = {}) {
     }
 
     const url = base + '/api/ingest';
-    const body = JSON.stringify(records);
-    const result = await request(url, body, remote.token);
+    const batch = Number(opts.batchSize) > 0 ? Number(opts.batchSize) : PUSH_BATCH;
+    const total = { added: 0, duplicate: 0, invalid: 0 };
+    for (let i = 0; i < records.length; i += batch) {
+        const chunk = records.slice(i, i + batch);
+        const result = await request(url, JSON.stringify(chunk), remote.token);
+        for (const k of Object.keys(total)) total[k] += Number(result[k]) || 0;
 
-    state.remote.pushedAt = new Date().toISOString();
-    // Advance the insertion-order mark only on success; on throw the offsets stay
-    // put and the same records retry next push.
-    if (newOffsets) state.remote.offsets = newOffsets;
-    store.saveState(state);
+        state.remote.pushedAt = new Date().toISOString();
+        // Advance the insertion-order mark per successful batch; on throw the
+        // offsets stay at the last good batch and the rest retries next push.
+        if (offsets) {
+            for (let j = i; j < i + chunk.length; j++) offsets[keys[j]]++;
+            state.remote.offsets = i + chunk.length >= records.length ? finalOffsets : { ...offsets };
+        }
+        store.saveState(state);
+    }
 
-    return { ...result, pushed: records.length, endpoint: base };
+    return { ...total, pushed: records.length, endpoint: base };
 }
 
 // HTTP/HTTPS request — uses global fetch when available (Node 18+), falls back
