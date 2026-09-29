@@ -249,6 +249,9 @@ function installSchtasks(spec, interval) {
     const xmlFile = path.join(os.tmpdir(), 'tt-' + spec.taskName + '-' + process.pid + '.xml');
     // schtasks reads task XML as UTF-16LE (BOM + declared encoding).
     fs.writeFileSync(xmlFile, '﻿' + schtasksXml(spec, interval), 'utf16le');
+    // Stop a running instance first: re-creating the task leaves the old process
+    // alive, and IgnoreNew would then skip the /run below.
+    tryRun('schtasks', ['/end', '/tn', spec.taskName]);
     let r;
     try {
         r = tryRun('schtasks', schtasksArgs(spec, xmlFile));
