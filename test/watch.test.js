@@ -80,3 +80,17 @@ test('watchTick never throws when push endpoint is down; reports pushError', asy
         delete process.env.TT_ENDPOINT;
     }
 });
+
+test('watch pidfile: newest watcher owns it, older one sees it lost ownership', () => {
+    const { claimWatch, ownsWatch, PID_FILE } = require('../src/watch');
+    fs.rmSync(PID_FILE, { force: true });
+    assert.equal(ownsWatch(111), true, 'no pidfile: keep running');
+
+    claimWatch(111);
+    assert.equal(ownsWatch(111), true);
+
+    claimWatch(222); // a re-installed service starts a new watcher
+    assert.equal(ownsWatch(111), false, 'old watcher must stand down');
+    assert.equal(ownsWatch(222), true);
+    fs.rmSync(PID_FILE, { force: true });
+});

@@ -11,7 +11,30 @@
 // here is spawned implicitly. `tt watch` is an explicit, foreground process the
 // user (or their OS supervisor) starts and stops.
 
+const fs = require('fs');
+const path = require('path');
 const { sync } = require('./collectors');
+const { ROOT } = require('./paths');
+
+// Single instance, newest wins. Each watcher writes its pid here on start and
+// exits at the next tick once another watcher has claimed the file. This covers
+// re-installing the service: on Windows, ending the task kills conhost but leaves
+// its node child running, so without this the old and new loops would both sync
+// into the same store.
+const PID_FILE = path.join(ROOT, 'watch.pid');
+
+function claimWatch(pid = process.pid) {
+    fs.mkdirSync(ROOT, { recursive: true });
+    fs.writeFileSync(PID_FILE, String(pid));
+}
+
+function ownsWatch(pid = process.pid) {
+    try {
+        return Number(fs.readFileSync(PID_FILE, 'utf8').trim()) === pid;
+    } catch {
+        return true; // pidfile gone: nobody else claimed it, keep running
+    }
+}
 
 // One iteration. Never throws — a transient collector/network failure must not
 // kill a long-running watcher. Returns the sync result (or null on hard failure)
@@ -39,11 +62,21 @@ async function watchTick({ offline = false, log = console.log, errlog = console.
 // Loop forever, ticking every interval seconds. Resolves only on a thrown
 // non-tick error; the setInterval keeps the process alive (intentionally NOT
 // unref'd — the whole point is to stay running).
-async function watch({ offline = false, interval = 60 } = {}) {
+async function watch({ offline = false, interval = 60, exit = process.exit } = {}) {
     if (!(interval > 0)) throw new Error('watch needs --interval > 0');
     console.log('token-tracker watch: sync+push every ' + interval + 's  (Ctrl-C to stop)');
+    claimWatch();
     await watchTick({ offline });
-    return setInterval(() => { watchTick({ offline }); }, interval * 1000);
+    const timer = setInterval(() => {
+        if (!ownsWatch()) {
+            console.log('token-tracker watch: a newer watcher took over; exiting.');
+            clearInterval(timer);
+            exit(0);
+            return;
+        }
+        watchTick({ offline });
+    }, interval * 1000);
+    return timer;
 }
 
-module.exports = { watch, watchTick };
+module.exports = { watch, watchTick, claimWatch, ownsWatch, PID_FILE };

@@ -249,8 +249,9 @@ function installSchtasks(spec, interval) {
     const xmlFile = path.join(os.tmpdir(), 'tt-' + spec.taskName + '-' + process.pid + '.xml');
     // schtasks reads task XML as UTF-16LE (BOM + declared encoding).
     fs.writeFileSync(xmlFile, '﻿' + schtasksXml(spec, interval), 'utf16le');
-    // Stop a running instance first: re-creating the task leaves the old process
-    // alive, and IgnoreNew would then skip the /run below.
+    // End the running task first, or IgnoreNew skips the /run below. /end only
+    // kills conhost; its orphaned node child exits via the watch pidfile once the
+    // new watcher claims it (see watch.js).
     tryRun('schtasks', ['/end', '/tn', spec.taskName]);
     let r;
     try {
