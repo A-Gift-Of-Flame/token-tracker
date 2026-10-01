@@ -11,29 +11,18 @@
 // here is spawned implicitly. `tt watch` is an explicit, foreground process the
 // user (or their OS supervisor) starts and stops.
 
-const fs = require('fs');
-const path = require('path');
 const { sync } = require('./collectors');
-const { ROOT } = require('./paths');
+const { claimInstance, instanceFile, ownsInstance } = require('./instance');
 
-// Single instance, newest wins. Each watcher writes its pid here on start and
-// exits at the next tick once another watcher has claimed the file. This covers
-// re-installing the service: on Windows, ending the task kills conhost but leaves
-// its node child running, so without this the old and new loops would both sync
-// into the same store.
-const PID_FILE = path.join(ROOT, 'watch.pid');
+// Single instance, newest wins — see instance.js.
+const PID_FILE = instanceFile('watch');
 
 function claimWatch(pid = process.pid) {
-    fs.mkdirSync(ROOT, { recursive: true });
-    fs.writeFileSync(PID_FILE, String(pid));
+    claimInstance('watch', pid);
 }
 
 function ownsWatch(pid = process.pid) {
-    try {
-        return Number(fs.readFileSync(PID_FILE, 'utf8').trim()) === pid;
-    } catch {
-        return true; // pidfile gone: nobody else claimed it, keep running
-    }
+    return ownsInstance('watch', pid);
 }
 
 // One iteration. Never throws — a transient collector/network failure must not

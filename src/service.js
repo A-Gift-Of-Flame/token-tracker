@@ -17,6 +17,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { claimInstance } = require('./instance');
 
 const TT_JS = path.resolve(__dirname, '..', 'bin', 'tt.js');
 const NODE = process.execPath;
@@ -27,6 +28,7 @@ const SERVICES = {
         label: 'token-tracker',
         launchdLabel: 'com.token-tracker.watch',
         taskName: 'token-tracker-watch',
+        instance: 'watch',
         desc: 'token-tracker continuous sync+push',
         args: (interval) => ['watch', '--interval', String(interval)],
     },
@@ -35,6 +37,7 @@ const SERVICES = {
         label: 'token-tracker-presence',
         launchdLabel: 'token-tracker-presence',
         taskName: 'token-tracker-presence',
+        instance: 'presence',
         desc: 'token-tracker Discord presence',
         args: () => ['presence', '--all'],
     },
@@ -244,14 +247,18 @@ function schtasksArgs(spec, xmlFile) {
     return ['/create', '/tn', spec.taskName, '/xml', xmlFile, '/f'];
 }
 
+function standDown(spec) {
+    try { claimInstance(spec.instance, 0); } catch { /* best effort */ }
+}
+
 function installSchtasks(spec, interval) {
     // Logon task that runs the watch loop. /f overwrites on re-install.
     const xmlFile = path.join(os.tmpdir(), 'tt-' + spec.taskName + '-' + process.pid + '.xml');
     // schtasks reads task XML as UTF-16LE (BOM + declared encoding).
     fs.writeFileSync(xmlFile, '﻿' + schtasksXml(spec, interval), 'utf16le');
     // End the running task first, or IgnoreNew skips the /run below. /end only
-    // kills conhost; its orphaned node child exits via the watch pidfile once the
-    // new watcher claims it (see watch.js).
+    // kills conhost; its orphaned node child exits via its pidfile once the new
+    // instance claims it (see instance.js).
     tryRun('schtasks', ['/end', '/tn', spec.taskName]);
     let r;
     try {
@@ -266,6 +273,8 @@ function installSchtasks(spec, interval) {
 
 function uninstallSchtasks(spec) {
     tryRun('schtasks', ['/end', '/tn', spec.taskName]);
+    // /end leaves the node child running; pid 0 makes it stand down.
+    standDown(spec);
     const r = tryRun('schtasks', ['/delete', '/tn', spec.taskName, '/f']);
     return { ok: true, message: r.ok ? 'removed scheduled task: ' + spec.taskName + '.' : 'no scheduled task to remove: ' + spec.taskName + '.' };
 }

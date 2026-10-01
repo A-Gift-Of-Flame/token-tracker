@@ -3,6 +3,7 @@
 const EventEmitter = require('events');
 const path = require('path');
 const { ROOT, readJson } = require('../paths');
+const { claimInstance, ownsInstance } = require('../instance');
 const { DiscordIPC } = require('./discord-ipc');
 const { PresenceMultiplexer } = require('./multiplex');
 const { renderMultiplexActivity, renderPresenceActivity } = require('./render');
@@ -13,6 +14,7 @@ const PRESENCE_FILE = path.join(ROOT, 'presence.json');
 const LIVE_AGENT_SOURCES = ['claude', 'codex', 'gemini', 'opencode'];
 const PRESENCE_SOURCES = new Set(['store', ...LIVE_AGENT_SOURCES, 'all']);
 const SOURCE_TIERS = { claude: 2, codex: 1, gemini: 1, opencode: 1 };
+const INSTANCE_CHECK_MS = 2000;
 
 function loadPresenceConfig() {
     return readJson(PRESENCE_FILE, {}) || {};
@@ -169,7 +171,24 @@ async function runPresence(opts = {}) {
         const msg = err && err.message ? err.message : String(err);
         throw new Error('could not start presence: ' + msg);
     }
+    // One presence per machine, newest wins: two would publish competing
+    // activities (different elapsed anchors) and Discord flips between them.
+    if (opts.singleInstance !== false) watchInstance(engine);
     return engine.done;
+}
+
+function watchInstance(engine, opts = {}) {
+    const name = opts.name || 'presence';
+    const pid = opts.pid || process.pid;
+    claimInstance(name, pid);
+    const timer = setInterval(() => {
+        if (ownsInstance(name, pid)) return;
+        clearInterval(timer);
+        engine._write(engine.stdout, 'presence: a newer presence took over; exiting\n');
+        engine.shutdown(0);
+    }, opts.intervalMs || INSTANCE_CHECK_MS);
+    engine.done.then(() => clearInterval(timer));
+    return timer;
 }
 
 module.exports = {
@@ -183,4 +202,5 @@ module.exports = {
     loadPresenceConfig,
     resolveClientId,
     runPresence,
+    watchInstance,
 };
