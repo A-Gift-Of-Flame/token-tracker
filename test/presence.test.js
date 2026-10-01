@@ -175,3 +175,29 @@ test('StorePresenceSource scans only the newest month file (no full-ledger reads
     assert.equal(states[0].agent, 'codex');
     assert.equal(states[0].model, 'gpt-5.5');
 });
+
+test('elapsed timer anchors to session start, not last activity', () => {
+    const startedAt = Date.parse('2026-10-01T10:00:00Z');
+    const render = (lastMs) => renderPresenceActivity({
+        status: 'active',
+        agent: 'claude-code',
+        project: 'p',
+        model: 'm',
+        tokens: { input: 1 },
+        cost: { amount: 0.01, estimated: true },
+        timestamps: {
+            startedAt: new Date(startedAt).toISOString(),
+            lastActivityAt: new Date(lastMs).toISOString(),
+        },
+    }, { now: lastMs });
+    const a = render(startedAt + 5000);
+    const b = render(startedAt + 10000);
+    assert.equal(a.timestamps.start, Math.floor(startedAt / 1000));
+    assert.equal(b.timestamps.start, a.timestamps.start);
+});
+
+test('idle activity is stable across renders (no per-poll timer reset)', () => {
+    const a = renderPresenceActivity({ status: 'idle' }, { now: 1000 });
+    const b = renderPresenceActivity({ status: 'idle' }, { now: 6000 });
+    assert.deepEqual(a, b);
+});

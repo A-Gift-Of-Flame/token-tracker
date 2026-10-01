@@ -70,7 +70,6 @@ function renderPresenceActivity(state, opts = {}) {
         return {
             details: 'token-tracker idle',
             state: 'no usage records found',
-            timestamps: { start: Math.floor(now / 1000) },
         };
     }
 
@@ -101,10 +100,16 @@ function renderPresenceActivity(state, opts = {}) {
         if (!parts.includes(label) && (field === 'project' || field === 'model')) parts.push(label);
     }
 
+    // Anchor the Discord elapsed timer to session start: anchoring to
+    // lastActivityAt reset it to 0:00 on every new event.
+    const started = state.timestamps && state.timestamps.startedAt
+        ? Date.parse(state.timestamps.startedAt)
+        : NaN;
+    const anchor = Number.isFinite(started) ? started : (Number.isFinite(last) ? last : now);
     const activity = {
         details: truncate(details),
         state: truncate(parts.join(' · ')),
-        timestamps: { start: Math.floor((Number.isFinite(last) ? last : now) / 1000) },
+        timestamps: { start: Math.floor(anchor / 1000) },
     };
     if (state.assets) activity.assets = state.assets;
     return activity;
